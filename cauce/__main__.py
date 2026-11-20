@@ -213,6 +213,14 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         print("El motor no está en marcha (no hay token de sesión).", file=sys.stderr)
         return 3
+    try:
+        c.ping()
+    except OSError:
+        # api.json y api.token quedaron de una ejecución que no se cerró bien (corte de luz,
+        # proceso terminado a la fuerza). Se sustituyen al arrancar de nuevo el motor.
+        print("El motor no está en marcha (quedaron datos de una ejecución que no se cerró "
+              "correctamente; se reemplazan al volver a arrancarlo).", file=sys.stderr)
+        return 3
     if a.cmd == "status":
         print(json.dumps(c.diagnostics(), indent=2, ensure_ascii=False))
         return 0
