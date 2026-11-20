@@ -1,0 +1,36 @@
+name: ci
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Pruebas unitarias e integración
+        working-directory: tests
+        run: python -m unittest -v
+      - name: Escenario de 10 pasos (simulador)
+        run: python -m cauce scenario --out reports
+      - name: Detección real de interfaces (Windows, solo lectura)
+        if: runner.os == 'Windows'
+        run: |
+          python -m cauce doctor
+          python -m cauce discover --raw reports/windows-runner-capture.json
+      - name: Instalación aislada (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows/install.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports-${{ matrix.os }}-${{ matrix.python }}
+          path: reports/

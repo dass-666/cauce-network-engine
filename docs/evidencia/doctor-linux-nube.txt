@@ -1,0 +1,10 @@
+[OK   ] Python >= 3.10                        3.13.18
+[AVISO] Sistema operativo                     Linux-6.18.44-fc-v726-x86_64-with-glibc2.39 (objetivo principal: Windows 11)
+[AVISO] iproute2 (ip -j)                      no encontrado
+[AVISO] Privilegios                           Se ejecuta como administrador. NO es necesario: el motor solo lee la configuración y enlaza sockets. Ejecútalo como usuario normal.
+[OK   ] Carpeta de datos escribible           /root/.local/share/cauce-network-engine
+[OK   ] Puerto API 127.0.0.1:8765 libre       libre
+[FALLO] Detección de interfaces               FileNotFoundError: [Errno 2] No such file or directory: 'ip'
+[OK   ] Destinos de diagnóstico configurados  1.1.1.1:443, 9.9.9.9:443
+
+Diagnóstico con FALLOS.
