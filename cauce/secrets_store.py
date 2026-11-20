@@ -54,6 +54,8 @@ def write_secret(path: str, value: str) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())   # el contenido llega al disco antes de que nadie lo dé por guardado
     return method
 
 

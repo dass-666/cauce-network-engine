@@ -11,7 +11,7 @@ Comandos:
   stop         Cierre limpio del motor en marcha.
   labserver    Servidor de laboratorio propio en 127.0.0.1:8770.
   verify-audit Comprueba la integridad del registro de auditoría.
-  token        Credenciales de solo lectura: create | list | revoke (requiere el motor en marcha).
+  token        Credenciales de solo lectura: create | list | revoke | recover (requiere el motor en marcha).
 """
 from __future__ import annotations
 
@@ -154,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     tp.add_argument("--scope", default="read", choices=["read"])
     tp.add_argument("--out", help="Guardar el token protegido (DPAPI en Windows) en este archivo en vez de mostrarlo")
     tsub.add_parser("list")
+    tsub.add_parser("recover")
     tp = tsub.add_parser("revoke")
     tp.add_argument("token_id")
     p = sub.add_parser("verify-audit")
@@ -242,9 +243,16 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"Credencial {rec['id']} ({rec['name']}, {rec['scope']}) guardada en {a.out}. El token no se muestra.")
                 else:
                     print(f"Credencial {rec['id']} ({rec['name']}, {rec['scope']}). Cópiala ahora; no se volverá a mostrar:\n{rec['token']}")
+            elif a.tcmd == "recover":
+                r = c.recover_tokens()
+                print("Almacén verificado; bloqueo levantado." if r["recovered"] else r["note"])
             elif a.tcmd == "list":
+                st = c.tokens_status()
+                if st["locked"]:
+                    print(f"*** ALMACÉN BLOQUEADO ({st['locked']}): las credenciales read no se aceptan. "
+                          f"Pendientes: {st['pending_revocations']}. Use 'cauce token recover' ***")
                 for t in c.tokens():
-                    estado = "REVOCADA" if t["revoked_at"] else "activa"
+                    estado = "REVOCACIÓN PENDIENTE" if t.get("revocation_pending") else ("REVOCADA" if t["revoked_at"] else "activa")
                     print(f"{t['id']}  {t['name']:<20} {t['scope']:<6} {estado:<9} peticiones={t['requests']}")
             else:
                 t = c.revoke_token(a.token_id)

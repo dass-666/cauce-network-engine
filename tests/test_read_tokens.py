@@ -425,50 +425,207 @@ class RevisionPr45Test(Base):
                 with open(p, encoding="utf-8") as fh:
                     self.assertNotIn(self.api.token, fh.read(), name)
 
+
+class RevocationFailSafeTest(Base):
+    """Una revocación no persistida nunca se presenta como completada ni puede revivir tras un reinicio."""
+
     def _store(self):
         d = tempfile.mkdtemp()
         return TokenStore(os.path.join(d, "tokens.dat"))
 
-    def test_create_rolls_back_when_storage_fails(self):
+    def _two(self):
+        st = self._store()
+        r1, t1 = st.create("sistema-a")
+        r2, t2 = st.create("sistema-b")
+        return st, r1, t1, r2, t2
+
+    def _code(self, fn, *a):
+        with self.assertRaises(TokenError) as cm:
+            fn(*a)
+        return cm.exception.code
+
+    # 1. fallo de escritura ---------------------------------------------------------------
+    def test_1_write_failure_is_not_reported_as_done_and_locks_read_credentials(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+        # el marcador (otro camino, sin write_secret) deja constancia durable
+        self.assertTrue(os.path.exists(st._path + ".lock"))
+        self.assertEqual(st.status()["locked"], "persist_failed")
+        self.assertEqual(st.status()["pending_revocations"], [r1["id"]])
+        # ninguna credencial read se acepta (ni la revocada ni la sana): no se confía en el registro
+        self.assertEqual(self._code(st.verify, t1), "credentials_locked")
+        self.assertEqual(self._code(st.verify, t2), "credentials_locked")
+        self.assertEqual(self._code(st.create, "otro"), "credentials_locked")
+        # el marcador no contiene secretos
+        with open(st._path + ".lock", encoding="utf-8") as fh:
+            blob = fh.read()
+        self.assertNotIn(t1.split(".")[2], blob)
+
+    def test_1b_create_rolls_back_on_write_failure(self):
         from unittest import mock
         st = self._store()
         with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
-            with self.assertRaises(TokenError) as cm:
-                st.create("sistema-a")
-        self.assertEqual((cm.exception.status, cm.exception.code), (503, "storage_error"))
-        self.assertEqual(st.list(), [], "no debe quedar una credencial fantasma")
-        st.create("sistema-a")   # el nombre sigue libre
+            self.assertEqual(self._code(st.create, "sistema-a"), "storage_error")
+        self.assertEqual(st.list(), [])
+        st.create("sistema-a")
 
-    def test_revocation_holds_in_memory_and_can_be_retried_when_storage_fails(self):
+    # 2. fallo del reemplazo del archivo -------------------------------------------------
+    def test_2_replace_failure_leaves_old_file_intact_and_locks(self):
         from unittest import mock
-        st = self._store()
-        rec, tok = st.create("sistema-a")
-        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("solo lectura")):
-            with self.assertRaises(TokenError) as cm:
-                st.revoke(rec["id"])
-        self.assertEqual(cm.exception.code, "revocation_not_persisted")
-        with self.assertRaises(TokenError) as cm:
-            st.verify(tok)
-        self.assertEqual(cm.exception.code, "token_revoked", "falla cerrado: sigue revocada en memoria")
-        st.revoke(rec["id"])   # reintento con el almacenamiento sano: ahora sí se guarda
-        with self.assertRaises(TokenError) as cm:
-            TokenStore(st._path).verify(tok)
-        self.assertEqual(cm.exception.code, "token_revoked", "tras reiniciar sigue revocada")
+        st, r1, t1, r2, t2 = self._two()
+        with open(st._path, "rb") as fh:
+            before = fh.read()
+        with mock.patch("cauce.tokens.os.replace", side_effect=PermissionError("archivo en uso")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+        with open(st._path, "rb") as fh:
+            self.assertEqual(fh.read(), before, "el registro anterior no se corrompe")
+        self.assertFalse(os.path.exists(st._path + ".tmp"), "no quedan temporales")
+        self.assertEqual(self._code(st.verify, t1), "credentials_locked")
 
-    def test_unreadable_store_is_set_aside_not_overwritten(self):
+    def test_2b_readback_mismatch_counts_as_failure(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        stale = {"version": 1, "tokens": []}
+        with mock.patch("cauce.tokens.read_secret", return_value=json.dumps(stale)):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+
+    # 3. reinicio tras una revocación fallida ---------------------------------------------
+    def test_3_restart_after_failed_revocation_keeps_it_revoked_and_locked(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        with mock.patch("cauce.tokens.os.replace", side_effect=PermissionError("en uso")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+        # reinicio del motor con el almacenamiento ya sano: el registro en disco AÚN dice "válida"
+        again = TokenStore(st._path)
+        self.assertEqual(again.status()["locked"], "persist_failed")
+        self.assertEqual(self._code(again.verify, t1), "credentials_locked")
+        self.assertEqual(self._code(again.verify, t2), "credentials_locked")
+        again.recover()
+        self.assertEqual(self._code(again.verify, t1), "token_revoked", "la revocación pendiente se reaplicó")
+        self.assertEqual(again.verify(t2).name, "sistema-b", "la credencial legítima vuelve")
+
+    def test_3a_restart_with_healthy_storage_recovers_by_itself_with_revocation_applied(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        with mock.patch("cauce.tokens.os.replace", side_effect=PermissionError("en uso")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+        again = TokenStore(st._path)
+        again.RETRY_S = 0
+        self.assertEqual(again.verify(t2).name, "sistema-b")
+        self.assertEqual(self._code(again.verify, t1), "token_revoked")
+        self.assertEqual(self._code(TokenStore(st._path).verify, t1), "token_revoked", "ya persistida")
+
+    def test_3b_restart_with_storage_still_broken_stays_locked(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        with mock.patch("cauce.tokens.os.replace", side_effect=PermissionError("en uso")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+            again = TokenStore(st._path)
+            self.assertEqual(self._code(again.verify, t2), "credentials_locked")
+            self.assertEqual(self._code(again.recover), "credentials_locked")
+            self.assertEqual(self._code(again.verify, t1), "credentials_locked")
+
+    def test_3c_startup_probe_locks_when_existing_store_is_not_writable(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        with mock.patch("cauce.tokens.os.replace", side_effect=PermissionError("solo lectura")):
+            again = TokenStore(st._path)
+        self.assertEqual(again.status()["locked"], "storage_not_writable")
+        self.assertEqual(self._code(again.verify, t2), "credentials_locked")
+
+    def test_3d_unreadable_store_locks_and_recover_invalidates_old_credentials(self):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "tokens.dat")
         with open(p, "wb") as fh:
             fh.write(b"basura")
         st = TokenStore(p)
-        st.create("sistema-a")
+        self.assertEqual(st.status()["locked"], "store_unreadable")
+        self.assertEqual(self._code(st.create, "sistema-a"), "credentials_locked")
+        st.recover()
         with open(p + ".unreadable", "rb") as fh:
-            self.assertEqual(fh.read(), b"basura")
+            self.assertEqual(fh.read(), b"basura", "el archivo ilegible se conserva apartado")
+        self.assertIsNone(st.status()["locked"])
+        st.create("sistema-a")
 
-    def test_api_returns_503_on_storage_error_and_engine_keeps_serving(self):
+    # 4. recuperación del almacenamiento --------------------------------------------------
+    def test_4_automatic_recovery_when_storage_returns(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        st.RETRY_S = 0
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+            self.assertEqual(self._code(st.verify, t2), "credentials_locked", "sigue bloqueado mientras falla")
+        # el almacenamiento vuelve: el siguiente intento verificado levanta el bloqueo CON la revocación incluida
+        self.assertEqual(st.verify(t2).name, "sistema-b")
+        self.assertEqual(self._code(st.verify, t1), "token_revoked")
+        self.assertFalse(os.path.exists(st._path + ".lock"), "el marcador se borra solo tras una escritura verificada")
+        self.assertEqual(self._code(TokenStore(st._path).verify, t1), "token_revoked", "ya está en disco")
+
+    def test_4b_retrying_the_revocation_completes_it(self):
+        from unittest import mock
+        st, r1, t1, r2, t2 = self._two()
+        st.RETRY_S = 10**6   # sin reintento automático: lo hace el administrador
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
+            self.assertEqual(self._code(st.revoke, r1["id"]), "revocation_not_persisted")
+        rec = st.revoke(r1["id"])
+        self.assertIsNotNone(rec["revoked_at"])
+        self.assertFalse(rec["revocation_pending"])
+        self.assertEqual(st.verify(t2).name, "sistema-b")
+
+    # 5. conservación del acceso administrativo ---------------------------------------------
+    def test_5_admin_access_survives_lock_and_can_diagnose_and_recover(self):
         from unittest import mock
         with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
             with self.assertRaises(CauceAPIError) as cm:
-                self.admin.create_token("otro")
+                self.admin.revoke_token(self.read_id)
         self.assertEqual(cm.exception.status, 503)
-        self.assertEqual(self.raw("GET", "/api/v1/status/connectivity", self.read_token)[0], 200)
+        self.assertIn("revocation_not_persisted", str(cm.exception))
+        # el admin sigue operando todo, no solo las credenciales
+        self.assertEqual(self.admin.connections() is not None, True)
+        st = self.admin.tokens_status()
+        self.assertEqual(st["locked"], "persist_failed")
+        self.assertEqual(st["pending_revocations"], [self.read_id])
+        self.assertTrue(any(t["revocation_pending"] for t in self.admin.tokens()))
+        # el consumidor recibe 503 (no 401, no datos), y las vistas read no filtran nada
+        status, data = self.raw("GET", "/api/v1/status/connectivity", self.read_token)
+        self.assertEqual((status, self.code(data)), (503, "credentials_locked"))
+        # recuperación por el admin
+        self.admin.recover_tokens()
+        self.assertIsNone(self.admin.tokens_status()["locked"])
+        status, data = self.raw("GET", "/api/v1/status/connectivity", self.read_token)
+        self.assertEqual((status, self.code(data)), (401, "token_revoked"))
+        # y el audit registra el fallo y la recuperación, sin secretos
+        kinds = [e["kind"] for e in self.eng.audit.events(0)]
+        self.assertIn("token.revocation_failed", kinds)
+        self.assertIn("token.recovered", kinds)
+        self.assertNotIn(self.read_token.split(".")[2], json.dumps(self.eng.audit.events(0)))
+
+    # 6. compatibilidad con credenciales existentes ----------------------------------------
+    def test_6_existing_v1_store_and_tokens_keep_working(self):
+        # registro tal como lo escribió la PR #5 (sin marcador, sin campos nuevos)
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "tokens.dat")
+        import hashlib
+        secret = "S" * 43
+        rec = {"id": "0a1b2c3d", "name": "monitor", "scope": "read", "created_at": 1.0, "revoked_at": None,
+               "hash": hashlib.sha256(secret.encode()).hexdigest()}
+        write_secret(p, json.dumps({"version": 1, "tokens": [rec]}))
+        st = TokenStore(p)
+        self.assertIsNone(st.status()["locked"])
+        self.assertEqual(st.verify(f"cr1.0a1b2c3d.{secret}").name, "monitor")
+        self.assertEqual(TokenStore(p).verify(f"cr1.0a1b2c3d.{secret}").name, "monitor", "tras reiniciar")
+        st.revoke("0a1b2c3d")
+        self.assertEqual(self._code(TokenStore(p).verify, f"cr1.0a1b2c3d.{secret}"), "token_revoked")
+
+    def test_6b_tokens_listing_keeps_old_fields(self):
+        t = self.admin.tokens()[0]
+        for k in ("id", "name", "scope", "created_at", "revoked_at", "last_used", "requests"):
+            self.assertIn(k, t)
+
+    def test_6c_normal_revocation_still_returns_ok_and_is_durable(self):
+        rec = self.admin.revoke_token(self.read_id)
+        self.assertFalse(rec["revocation_pending"])
+        self.assertFalse(os.path.exists(self.api.tokens._path + ".lock"))
+        self.assertEqual(self.raw("GET", "/api/v1/status/connectivity", self.read_token)[0], 401)

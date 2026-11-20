@@ -24,7 +24,8 @@
 cauce sim                                            # o "cauce run"; el motor debe estar en marcha
 cauce token create --name monitor --out monitor.token   # guarda el token protegido; no lo muestra
 cauce token list
-cauce token revoke <id>                              # efecto inmediato, sin reiniciar el motor
+cauce token revoke <id>                              # efecto inmediato, sin reiniciar el motor; 503 si no pudo guardarse
+cauce token recover                                  # solo si el almacén quedó bloqueado por un fallo de almacenamiento
 ```
 
 - Un nombre por sistema (2-32 caracteres: minúsculas, dígitos, `-`, `_`). Máximo 20 credenciales activas.
@@ -119,11 +120,26 @@ límites, verificaciones o bloqueos de plataformas externas.
 8. Cantidad y nombres de conexiones, tipo (`wifi`, `mobile`…) y latencias sí se exponen: son lo mínimo para decidir si hay conectividad.
 9. Probado solo contra el simulador y CI. Falta: Windows 11 físico, un consumidor real y la conmutación con dos proveedores (hardware).
 
-10. **Errores de almacenamiento.** Si `tokens.dat` no se puede escribir: al **crear**, se deshace (503 `storage_error`, no queda credencial fantasma);
-    al **revocar**, la revocación sigue vigente en memoria (falla cerrado) y la API responde 503 `revocation_not_persisted`; repetir la
-    revocación reintenta el guardado. **Si el motor se reinicia antes de que el guardado funcione, la credencial vuelve a ser válida**: tras ese
-    error, no reinicies hasta revocar de nuevo con éxito (o borra `tokens.dat` y recrea las credenciales). Un `tokens.dat` ilegible se aparta como
-    `tokens.dat.unreadable` en vez de sobrescribirse. El registro de accesos (`access.jsonl`) ignora en silencio sus propios errores de escritura (no tumba la API).
+10. **Errores de almacenamiento: fallo seguro (ver §6bis).** Una revocación solo se informa como completada si quedó escrita **y releída** en disco.
+    Si no, el almacén se **bloquea**: ninguna credencial `read` se acepta (`503 credentials_locked`) hasta que una escritura verificada incluya
+    la revocación. El token de administración no se ve afectado. Residual que ningún software evita: si el disco no admite **ninguna** escritura
+    y el proceso muere antes de recuperarse, no queda constancia; en ese caso la operación se informó como **no completada** y, si tras reiniciar
+    una credencial que se intentó revocar sigue válida, hay que revocarla de nuevo.
+
+## 6bis. Persistencia y bloqueo de fallo seguro
+
+| Mecanismo | Qué hace |
+|---|---|
+| Escritura atómica verificada | Temporal + `fsync` + reemplazo atómico + `fsync` del directorio + **relectura y comparación** con lo esperado. Cualquier fallo (escritura, reemplazo, relectura distinta) cuenta como fallo. El archivo anterior no se corrompe. |
+| Bloqueo | Tras un fallo al revocar: estado `persist_failed`. Todo `read` → `503 credentials_locked` (también las credenciales sanas: no se confía en un registro del que no se sabe si es el último). No se pueden crear credenciales. |
+| Archivo `tokens.dat.lock` | Se escribe de inmediato por un camino **independiente del reemplazo** (solo ids, sin secretos). **Sobrevive a reinicios**: al arrancar con él, el almacén sigue bloqueado y **reaplica las revocaciones pendientes**. Se borra solo tras una escritura verificada. |
+| Sonda de arranque | Si el registro existente no puede reescribirse y verificarse: `storage_not_writable`, bloqueado. Si es ilegible: `store_unreadable`, bloqueado. |
+| Respuesta al operador | `DELETE /tokens/{id}` → `503 revocation_not_persisted` («REVOCACIÓN NO COMPLETADA»), nunca 200. `cauce token list` avisa del bloqueo y marca `REVOCACIÓN PENDIENTE`. Auditoría: `token.revocation_failed`, `token.recovered` (sin secretos). |
+| Recuperación | Automática (reintento verificado cada 5 s mientras alguien presente una credencial, solo si el bloqueo fue por fallo de guardado), reintentando `cauce token revoke <id>`, o explícita: `cauce token recover` (`POST /tokens/recover`, solo admin). Al recuperar, las revocaciones pendientes quedan en disco y las credenciales legítimas vuelven a funcionar. |
+| Registro ilegible | `recover` lo aparta como `tokens.dat.unreadable` y empieza vacío: las credenciales anteriores quedan **invalidadas** (no se reutilizan credenciales de estado no verificable) y hay que recrearlas. |
+| Compatibilidad | El formato de `tokens.dat` no cambió: las credenciales creadas con la PR #5 siguen funcionando. `GET /tokens` añade `locked`, `pending_revocations`, `lock_recorded_on_disk` y `revocation_pending`; no quita campos. |
+
+Efecto operativo: ante un fallo de disco, los consumidores reciben `503` y deben tratarlo como «sin información» (igual que «motor no responde»), nunca como permiso.
 
 ## 7. Compatibilidad con v0.1.0
 

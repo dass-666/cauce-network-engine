@@ -88,6 +88,14 @@ class CauceClient:
     def tokens(self) -> list[dict]:
         return self._call("GET", "/tokens")["tokens"]
 
+    def tokens_status(self) -> dict:
+        """Estado del almacén: ``locked`` (motivo o None), ``pending_revocations`` y ``lock_recorded_on_disk``."""
+        d = self._call("GET", "/tokens")
+        return {k: v for k, v in d.items() if k != "tokens"}
+
+    def recover_tokens(self) -> dict:
+        return self._call("POST", "/tokens/recover", {})
+
     def revoke_token(self, token_id: str) -> dict:
         return self._call("DELETE", f"/tokens/{quote(token_id)}")
 

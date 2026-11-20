@@ -202,8 +202,9 @@ Todo lo siguiente está **IMPLEMENTADO EN PR #5** (aún sin fusionar):
    el valor por defecto de una ruta nueva es `admin`.
 3. Cada petición queda en `access.jsonl` con el nombre del sistema y el id de la credencial, nunca el token, el cuerpo ni los valores de la consulta.
 4. Revocación inmediata sin reiniciar el motor (`401 token_revoked`) y persistente tras reinicios. **Nunca** se entrega el token de administración.
-5. Si el almacenamiento falla al revocar, la revocación queda vigente en memoria y la API responde `503 revocation_not_persisted`
-   (LECTURA_PROTEGIDA.md §6, punto 10).
+5. Si el almacenamiento falla al revocar, la API responde `503 revocation_not_persisted` (nunca 200), las credenciales `read` quedan
+   bloqueadas (`503 credentials_locked`) y el bloqueo sobrevive a reinicios con las revocaciones pendientes reaplicadas, hasta una
+   escritura verificada o `cauce token recover` (LECTURA_PROTEGIDA.md §6bis). Un consumidor trata `503` como «sin información».
 
 **Siguen sin existir** (PROPUESTOS): límite de peticiones por token (B5/Parte C) y aislamiento real frente a procesos del mismo usuario de Windows.
 **Mientras la PR #5 no se fusione, la integración no debe pasar del laboratorio.**

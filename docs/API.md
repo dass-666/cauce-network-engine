@@ -17,7 +17,7 @@ Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON
 
 El token de sesión es `admin`. Además hay credenciales `read` por sistema que **solo** llegan a `/ping`, `/status/connectivity`
 y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
-`GET/POST /tokens`, `DELETE /tokens/{id}`. Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
+`GET/POST /tokens`, `POST /tokens/recover`, `DELETE /tokens/{id}` (`503 revocation_not_persisted` si la revocación no pudo guardarse; las `read` quedan en `503 credentials_locked` hasta recuperar). Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
 
 ## Errores
 

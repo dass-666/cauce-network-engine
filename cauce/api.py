@@ -117,7 +117,7 @@ class CauceAPI:
 
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):
-            return {"tokens": self.tokens.list()}
+            return dict(self.tokens.status(), tokens=self.tokens.list())
 
         @r("POST", P + "/tokens")
         def tokens_create(req, m, q, body):
@@ -126,9 +126,22 @@ class CauceAPI:
                            grant_id=rec["id"], name=rec["name"], scope=rec["scope"])
             return dict(rec, token=secret, note="Este es el único momento en que se muestra el token."), 201
 
+        @r("POST", P + "/tokens/recover")
+        def tokens_recover(req, m, q, body):
+            res = self.tokens.recover()
+            if res["recovered"]:
+                e.audit.record("token.recovered", "Almacén de credenciales verificado; bloqueo levantado")
+            return res
+
         @r("DELETE", P + r"/tokens/(?P<tid>[0-9a-f]{8})")
         def tokens_revoke(req, m, q, body):
-            rec = self.tokens.revoke(m["tid"])
+            try:
+                rec = self.tokens.revoke(m["tid"])
+            except TokenError as err:
+                if err.code == "revocation_not_persisted":   # sin secretos: solo el id
+                    e.audit.record("token.revocation_failed", "Revocación NO persistida; credenciales read bloqueadas",
+                                   grant_id=m["tid"])
+                raise
             e.audit.record("token.revoked", f"Credencial revocada: {rec['name']}", grant_id=rec["id"], name=rec["name"])
             return rec
 
