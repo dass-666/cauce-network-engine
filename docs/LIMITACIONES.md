@@ -19,7 +19,7 @@ simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno
 | Panel | Verificado en Chromium headless (modo simulación) | `docs/img/panel-sim-failover.png` |
 | Cierre limpio (`cauce stop`) | Verificado en Linux | borra token y `api.json`, registra `engine.stop` |
 | Auditoría encadenada | Verificado | `test_tamper_detected_and_redaction` |
-| Detección Windows (PowerShell) | **Verificado en Windows Server 2025 (CI de GitHub, máquina virtual)** | `cauce doctor` y `cauce discover` se ejecutan sin errores. Esa ejecución encontró un defecto real: la NIC de una VM invitada se clasificaba como virtual y quedaba excluida; ya está corregido. Falta probarlo en un PC físico con Wi‑Fi/4G. |
+| Detección Windows (PowerShell) | **Verificado en Windows Server 2025 (CI de GitHub, máquina virtual)** | `cauce doctor` y `cauce discover` se ejecutan sin errores. Esa ejecución encontró un defecto real: la NIC de una VM invitada se clasificaba como virtual y quedaba excluida; ya está corregido. También se vio que Windows puede repetir el mismo ifIndex en dos adaptadores, y ahora se generan ids únicos. La captura real está en `tests/fixtures/windows_github_runner_real.json`. Falta probarlo en un PC físico con Wi‑Fi/4G. |
 | DPAPI para el token | Verificado en Windows (CI) | `test_secret_file_permissions` cifra y descifra con DPAPI en `windows-latest` |
 | Instalador `install.ps1` | Verificado en Windows (CI, consola de administrador) | Crea el entorno aislado y ejecuta `doctor`. Falta probarlo como usuario normal y los `.cmd` con doble clic |
 | Salida de consola con acentos/símbolos | Verificado en Windows (CI) | La CI encontró un fallo con cp1252, que ya está corregido |

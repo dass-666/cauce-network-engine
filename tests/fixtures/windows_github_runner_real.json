@@ -1,0 +1,19 @@
+{
+  "_nota": "CAPTURA REAL de 'cauce discover --raw' en el runner windows-latest de GitHub Actions (Windows Server 2025, build 26100, VM en Azure), 2026-11-20. No es un PC físico. Datos del runner efímero de GitHub, no de ningún usuario.",
+  "adapters": [
+    {"Name": "vEthernet (nat)", "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter", "ifIndex": 10, "Status": "Up", "MacAddress": "00-15-5D-72-14-8D", "LinkSpeed": "10 Gbps", "MediaType": "802.3", "PhysicalMediaType": "Unspecified", "NdisPhysicalMedium": 0, "Virtual": true, "HardwareInterface": false},
+    {"Name": "Ethernet 4", "InterfaceDescription": "Microsoft Azure Network Adapter", "ifIndex": 10, "Status": "Up", "MacAddress": "00-15-5D-72-14-8D", "LinkSpeed": "10 Gbps", "MediaType": "802.3", "PhysicalMediaType": "802.3", "NdisPhysicalMedium": 14, "Virtual": false, "HardwareInterface": false},
+    {"Name": "Ethernet 3", "InterfaceDescription": "Microsoft Hyper-V Network Adapter #3", "ifIndex": 14, "Status": "Up", "MacAddress": "7C-ED-8D-C1-6F-80", "LinkSpeed": "200 Gbps", "MediaType": "802.3", "PhysicalMediaType": "Unspecified", "NdisPhysicalMedium": 0, "Virtual": false, "HardwareInterface": true}
+  ],
+  "routes": [{"ifIndex": 14, "NextHop": "10.1.0.1", "RouteMetric": 1}],
+  "addresses": [
+    {"InterfaceIndex": 14, "IPAddress": "10.1.0.66", "PrefixLength": 20, "PrefixOrigin": 3, "AddressState": 4},
+    {"InterfaceIndex": 10, "IPAddress": "172.27.128.1", "PrefixLength": 20, "PrefixOrigin": 1, "AddressState": 4},
+    {"InterfaceIndex": 1, "IPAddress": "127.0.0.1", "PrefixLength": 8, "PrefixOrigin": 2, "AddressState": 4}
+  ],
+  "ipinterfaces": [
+    {"ifIndex": 14, "InterfaceMetric": 5, "ConnectionState": 1},
+    {"ifIndex": 10, "InterfaceMetric": 5000, "ConnectionState": 1},
+    {"ifIndex": 1, "InterfaceMetric": 75, "ConnectionState": 1}
+  ]
+}

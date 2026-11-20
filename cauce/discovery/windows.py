@@ -4,8 +4,9 @@ Solo LEE información: Get-NetAdapter, Get-NetIPAddress, Get-NetRoute,
 Get-NetIPInterface. No requiere privilegios de administrador y no modifica
 ninguna configuración.
 
-ESTADO DE VERIFICACIÓN: el parser se probó con fixtures construidos según la
-documentación de esos cmdlets, no con capturas de un equipo real. Ejecuta
+ESTADO DE VERIFICACIÓN: probado con un fixture sintético y con una captura
+REAL del runner Windows de GitHub (VM en Azure); falta una captura de un PC
+físico con Wi‑Fi/4G. Ejecuta
 ``cauce discover --raw`` en tu equipo para guardar una captura real y
 añadirla a ``tests/fixtures``.
 """
@@ -120,8 +121,16 @@ def parse(payload: dict[str, Any]) -> list[Connection]:
             gw_by_if[idx] = (nh, metric)
 
     out: list[Connection] = []
+    used_ids: set[str] = set()
     for ad in adapters:
         idx = ad.get("ifIndex")
+        # Visto en un equipo real: dos adaptadores (vSwitch y NIC) con el mismo ifIndex.
+        cid = f"win-{idx}"
+        n = 2
+        while cid in used_ids:
+            cid = f"win-{idx}-{n}"
+            n += 1
+        used_ids.add(cid)
         kind, virtual = classify(ad)
         gw = gw_by_if.get(idx)
         metric = None
@@ -129,7 +138,7 @@ def parse(payload: dict[str, Any]) -> list[Connection]:
             if_metric = (ipif.get(idx) or {}).get("InterfaceMetric")
             metric = (gw[1] or 0) + (if_metric or 0)  # Windows suma ambas métricas
         out.append(Connection(
-            id=f"win-{idx}",
+            id=cid,
             name=str(ad.get("Name") or f"if{idx}"),
             description=str(ad.get("InterfaceDescription") or ""),
             kind=kind,

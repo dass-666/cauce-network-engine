@@ -71,6 +71,21 @@ class WindowsParserTest(unittest.TestCase):
         self.assertTrue(cs[0].usable)
 
 
+class WindowsRealCaptureTest(unittest.TestCase):
+    """Captura real del runner windows-latest de GitHub (no es un PC físico)."""
+
+    def test_real_runner_capture(self):
+        with open(os.path.join(FIXTURES, "windows_github_runner_real.json"), encoding="utf-8") as fh:
+            conns = analyze(windows.parse(json.load(fh)))
+        ids = [c.id for c in conns]
+        self.assertEqual(len(ids), len(set(ids)), "ids únicos aunque Windows repita ifIndex")
+        usable = [c for c in conns if c.usable and not c.is_virtual]
+        self.assertEqual([c.name for c in usable], ["Ethernet 3"])
+        self.assertEqual(usable[0].gateway, "10.1.0.1")
+        self.assertEqual(usable[0].route_metric, 6)
+        self.assertEqual(usable[0].independence, Independence.LIKELY)
+
+
 class LinuxParserTest(unittest.TestCase):
     def test_parse(self):
         with open(os.path.join(FIXTURES, "linux_ip_synthetic.json"), encoding="utf-8") as fh:
