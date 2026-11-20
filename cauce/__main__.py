@@ -118,7 +118,17 @@ def _client(cfg: dict):
     return CauceClient.from_local_install(cfg["data_dir"])
 
 
+def _safe_console() -> None:
+    # En Windows la salida redirigida usa cp1252 y fallaría con caracteres como ✓ o ñ.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _safe_console()
     ap = argparse.ArgumentParser(prog="cauce", description=f"Cauce Network Engine {__version__}")
     ap.add_argument("--config", help="Archivo de configuración JSON")
     sub = ap.add_subparsers(dest="cmd", required=True)
