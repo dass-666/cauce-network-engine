@@ -9,10 +9,10 @@ test_probe_real (test_api_and_real_network.RealNetworkTest.test_probe_real) ... 
 test_source_binding_is_observed_by_server (test_api_and_real_network.RealNetworkTest.test_source_binding_is_observed_by_server) ... ok
 test_config_rules (test_core.AuditConfigSecretsTest.test_config_rules) ... ok
 test_secret_file_permissions (test_core.AuditConfigSecretsTest.test_secret_file_permissions) ... ok
-test_tamper_detected_and_redaction (test_core.AuditConfigSecretsTest.test_tamper_detected_and_redaction) ... /home/claude/cauce-network-engine/tests/test_core.py:269: ResourceWarning: unclosed file <_io.TextIOWrapper name='<tmp> mode='r' encoding='utf-8'>
+test_tamper_detected_and_redaction (test_core.AuditConfigSecretsTest.test_tamper_detected_and_redaction) ... /home/claude/cauce-network-engine/tests/test_core.py:269: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp53hwrtxv/a.jsonl' mode='r' encoding='utf-8'>
   raw = open(p, encoding="utf-8").read()
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
-/home/claude/cauce-network-engine/tests/test_core.py:274: ResourceWarning: unclosed file <_io.TextIOWrapper name='<tmp> mode='w' encoding='utf-8'>
+/home/claude/cauce-network-engine/tests/test_core.py:274: ResourceWarning: unclosed file <_io.TextIOWrapper name='/tmp/tmp53hwrtxv/a.jsonl' mode='w' encoding='utf-8'>
   open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 ResourceWarning: Enable tracemalloc to get the object allocation traceback
 ok
@@ -38,6 +38,11 @@ test_explicit_unavailable_is_rejected (test_core.RoutingTest.test_explicit_unava
 test_failover_of_one_lease_does_not_move_others (test_core.RoutingTest.test_failover_of_one_lease_does_not_move_others) ... ok
 test_owner_protection (test_core.RoutingTest.test_owner_protection) ... ok
 test_parse (test_discovery.LinuxParserTest.test_parse) ... ok
+test_base64_utf8_round_trip (test_discovery.PowerShellEncodingTest.test_base64_utf8_round_trip) ... ok
+test_garbage_output_gives_clear_error (test_discovery.PowerShellEncodingTest.test_garbage_output_gives_clear_error) ... ok
+test_powershell_failure (test_discovery.PowerShellEncodingTest.test_powershell_failure) ... ok
+test_real_powershell_non_ascii (test_discovery.PowerShellEncodingTest.test_real_powershell_non_ascii) ... skipped 'necesita powershell.exe'
+test_script_is_read_only (test_discovery.PowerShellEncodingTest.test_script_is_read_only) ... ok
 test_independence_distinct_gateway_is_only_likely (test_discovery.WindowsParserTest.test_independence_distinct_gateway_is_only_likely) ... ok
 test_independence_two_interfaces_same_router_are_shared (test_discovery.WindowsParserTest.test_independence_two_interfaces_same_router_are_shared) ... ok
 test_ip_gateway_state (test_discovery.WindowsParserTest.test_ip_gateway_state) ... ok
@@ -53,6 +58,6 @@ test_no_valid_python_fails_with_clear_message (test_windows_installer.WindowsIns
 test_without_py_launcher_uses_python (test_windows_installer.WindowsInstallerTest.test_without_py_launcher_uses_python) ... skipped 'el instalador solo existe en Windows'
 
 ----------------------------------------------------------------------
-Ran 47 tests in 3.115s
+Ran 52 tests in 3.153s
 
-OK (skipped=4)
+OK (skipped=5)
