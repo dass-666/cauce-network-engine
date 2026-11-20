@@ -1,0 +1,15 @@
+{
+  "_nota": "FIXTURE SINTÉTICO con el formato de 'ip -j addr' y 'ip -j -4 route' (iproute2).",
+  "addrs": [
+    {"ifindex": 1, "ifname": "lo", "flags": ["LOOPBACK", "UP", "LOWER_UP"], "operstate": "UNKNOWN", "link_type": "loopback", "address": "00:00:00:00:00:00", "addr_info": [{"family": "inet", "local": "127.0.0.1", "prefixlen": 8}]},
+    {"ifindex": 2, "ifname": "enp3s0", "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"], "operstate": "UP", "link_type": "ether", "address": "00:11:22:33:44:55", "addr_info": [{"family": "inet", "local": "192.168.1.60", "prefixlen": 24}]},
+    {"ifindex": 3, "ifname": "wlp2s0", "flags": ["BROADCAST", "MULTICAST", "UP", "NO-CARRIER"], "operstate": "DOWN", "link_type": "ether", "address": "aa:bb:cc:dd:ee:02", "addr_info": []},
+    {"ifindex": 4, "ifname": "wwan0", "flags": ["POINTOPOINT", "UP", "LOWER_UP"], "operstate": "UNKNOWN", "link_type": "none", "address": "", "addr_info": [{"family": "inet", "local": "10.77.1.9", "prefixlen": 30}]},
+    {"ifindex": 5, "ifname": "docker0", "flags": ["BROADCAST", "MULTICAST", "UP"], "operstate": "DOWN", "link_type": "ether", "address": "02:42:00:00:00:05", "addr_info": [{"family": "inet", "local": "172.17.0.1", "prefixlen": 16}]}
+  ],
+  "routes": [
+    {"dst": "default", "gateway": "192.168.1.1", "dev": "enp3s0", "metric": 100},
+    {"dst": "default", "gateway": "10.77.1.10", "dev": "wwan0", "metric": 700},
+    {"dst": "192.168.1.0/24", "dev": "enp3s0", "metric": 100}
+  ]
+}

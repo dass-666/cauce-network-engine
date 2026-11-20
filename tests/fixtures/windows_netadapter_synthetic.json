@@ -1,0 +1,36 @@
+{
+  "_nota": "FIXTURE SINTÉTICO construido según la documentación de Get-NetAdapter/Get-NetIPAddress/Get-NetRoute/Get-NetIPInterface. NO es una captura de un equipo real. Sustituir/añadir capturas reales con 'cauce discover --raw archivo.json'.",
+  "adapters": [
+    {"Name": "Ethernet", "InterfaceDescription": "Realtek PCIe GbE Family Controller", "ifIndex": 12, "Status": "Up", "MacAddress": "00-11-22-33-44-55", "LinkSpeed": "1 Gbps", "MediaType": "802.3", "PhysicalMediaType": "802.3", "NdisPhysicalMedium": 14, "Virtual": false, "HardwareInterface": true},
+    {"Name": "Wi-Fi", "InterfaceDescription": "Intel(R) Wi-Fi 6 AX201 160MHz", "ifIndex": 18, "Status": "Up", "MacAddress": "AA-BB-CC-DD-EE-01", "LinkSpeed": "866.7 Mbps", "MediaType": "Native 802.11", "PhysicalMediaType": "Native 802.11", "NdisPhysicalMedium": 9, "Virtual": false, "HardwareInterface": true},
+    {"Name": "Celular", "InterfaceDescription": "Generic Mobile Broadband Adapter", "ifIndex": 25, "Status": "Up", "MacAddress": "", "LinkSpeed": "150 Mbps", "MediaType": "Wireless WAN", "PhysicalMediaType": "Wireless WAN", "NdisPhysicalMedium": 8, "Virtual": false, "HardwareInterface": true},
+    {"Name": "Ethernet 2", "InterfaceDescription": "Remote NDIS based Internet Sharing Device", "ifIndex": 31, "Status": "Disconnected", "MacAddress": "02-00-00-00-00-31", "LinkSpeed": "0 bps", "MediaType": "802.3", "PhysicalMediaType": "Unspecified", "NdisPhysicalMedium": 0, "Virtual": false, "HardwareInterface": true},
+    {"Name": "vEthernet (WSL)", "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter", "ifIndex": 40, "Status": "Up", "MacAddress": "00-15-5D-00-00-40", "LinkSpeed": "10 Gbps", "MediaType": "802.3", "PhysicalMediaType": "Unspecified", "NdisPhysicalMedium": 0, "Virtual": true, "HardwareInterface": false},
+    {"Name": "WireGuard Tunnel", "InterfaceDescription": "WireGuard Tunnel", "ifIndex": 44, "Status": "Up", "MacAddress": "", "LinkSpeed": "100 Gbps", "MediaType": "IP", "PhysicalMediaType": "Unspecified", "NdisPhysicalMedium": 0, "Virtual": true, "HardwareInterface": false},
+    {"Name": "Ethernet 3", "InterfaceDescription": "ASIX AX88179 USB 3.0 to Gigabit Ethernet Adapter", "ifIndex": 50, "Status": "Up", "MacAddress": "00-0E-C6-00-00-50", "LinkSpeed": "1 Gbps", "MediaType": "802.3", "PhysicalMediaType": "802.3", "NdisPhysicalMedium": 14, "Virtual": false, "HardwareInterface": true}
+  ],
+  "addresses": [
+    {"InterfaceIndex": 12, "IPAddress": "192.168.1.50", "PrefixLength": 24, "PrefixOrigin": 3, "AddressState": 4},
+    {"InterfaceIndex": 18, "IPAddress": "192.168.1.51", "PrefixLength": 24, "PrefixOrigin": 3, "AddressState": 4},
+    {"InterfaceIndex": 25, "IPAddress": "10.88.12.7", "PrefixLength": 30, "PrefixOrigin": 3, "AddressState": 4},
+    {"InterfaceIndex": 31, "IPAddress": "169.254.10.20", "PrefixLength": 16, "PrefixOrigin": 4, "AddressState": 1},
+    {"InterfaceIndex": 40, "IPAddress": "172.28.80.1", "PrefixLength": 20, "PrefixOrigin": 1, "AddressState": 4},
+    {"InterfaceIndex": 44, "IPAddress": "10.66.0.2", "PrefixLength": 32, "PrefixOrigin": 1, "AddressState": 4},
+    {"InterfaceIndex": 50, "IPAddress": "192.168.8.100", "PrefixLength": 24, "PrefixOrigin": 3, "AddressState": 4},
+    {"InterfaceIndex": 1, "IPAddress": "127.0.0.1", "PrefixLength": 8, "PrefixOrigin": 2, "AddressState": 4}
+  ],
+  "routes": [
+    {"ifIndex": 12, "NextHop": "192.168.1.1", "RouteMetric": 0},
+    {"ifIndex": 18, "NextHop": "192.168.1.1", "RouteMetric": 0},
+    {"ifIndex": 25, "NextHop": "10.88.12.5", "RouteMetric": 0},
+    {"ifIndex": 44, "NextHop": "0.0.0.0", "RouteMetric": 0},
+    {"ifIndex": 50, "NextHop": "192.168.8.1", "RouteMetric": 0},
+    {"ifIndex": 50, "NextHop": "192.168.8.254", "RouteMetric": 100}
+  ],
+  "ipinterfaces": [
+    {"ifIndex": 12, "InterfaceMetric": 25, "ConnectionState": 1},
+    {"ifIndex": 18, "InterfaceMetric": 35, "ConnectionState": 1},
+    {"ifIndex": 25, "InterfaceMetric": 55, "ConnectionState": 1},
+    {"ifIndex": 50, "InterfaceMetric": 25, "ConnectionState": 1}
+  ]
+}

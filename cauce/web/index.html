@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cauce Network Engine</title>
+<style>
+  :root { --bg:#f6f7f9; --fg:#1d2330; --muted:#667085; --card:#fff; --line:#d9dde3;
+          --ok:#127a3e; --warn:#a15c00; --bad:#b42318; --acc:#1f5eff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12151b; --fg:#e7eaf0; --muted:#98a2b3; --card:#1b2029; --line:#2c3340; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0; }
+  .badge { padding:2px 8px; border-radius:10px; font-size:12px; border:1px solid var(--line); }
+  .sim { background:#fff4d6; color:#7a4b00; border-color:#f0c46a; }
+  main { padding:16px; display:grid; gap:16px; grid-template-columns: 1fr; max-width:1200px; }
+  @media (min-width: 1000px) { main { grid-template-columns: 3fr 2fr; } }
+  section { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; overflow:auto; }
+  h2 { font-size:14px; margin:0 0 8px; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th, td { text-align:left; padding:6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; }
+  .healthy { color:var(--ok); font-weight:600; } .degraded { color:var(--warn); font-weight:600; }
+  .down { color:var(--bad); font-weight:600; } .unknown { color:var(--muted); }
+  button { font:inherit; padding:4px 10px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button.danger { background:var(--bad); color:#fff; border-color:var(--bad); }
+  .events { font-family: ui-monospace, Consolas, monospace; font-size:12px; max-height:420px; overflow:auto; }
+  .events div { padding:2px 0; border-bottom:1px dashed var(--line); }
+  .k { color:var(--muted); }
+  .err { color:var(--bad); }
+  input, select { font:inherit; padding:3px 6px; border:1px solid var(--line); border-radius:6px; background:var(--card); color:var(--fg); }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:6px 0; }
+  small { color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cauce Network Engine</h1>
+  <span id="mode" class="badge">…</span>
+  <span id="ver" class="badge"></span>
+  <span id="status" class="badge">conectando…</span>
+  <span style="flex:1"></span>
+  <button class="danger" onclick="stopAll()">Detener todo</button>
+</header>
+<main>
+  <div style="display:grid; gap:16px">
+    <section>
+      <h2>Conexiones</h2>
+      <table><thead><tr><th>Conexión</th><th>Tipo</th><th>IP / gateway</th><th>Salud</th><th>Latencia / disp.</th><th>Salida</th><th></th></tr></thead>
+      <tbody id="conns"></tbody></table>
+      <div class="row"><small>Ruta preferida del operador: <b id="selected">automática</b></small>
+        <button onclick="select(null)">Volver a automática</button></div>
+    </section>
+    <section>
+      <h2>Rutas asignadas (leases) y tareas</h2>
+      <table><thead><tr><th>Tarea</th><th>Estado</th><th>Conexión</th><th>Paso</th><th>Motivo</th><th></th></tr></thead>
+      <tbody id="tasks"></tbody></table>
+      <div class="row">
+        <input id="tUrl" size="34" value="" title="Debe estar en lab.allowed_hosts">
+        <select id="tConn"></select>
+        <input id="tSteps" type="number" min="1" max="100" value="5" style="width:60px">
+        <button class="primary" onclick="startTask()">Iniciar tarea de laboratorio</button>
+      </div>
+      <small>Solo destinos de laboratorio autorizados. Una respuesta 429 detiene la tarea; nunca se usa otra conexión para sortearla.</small>
+    </section>
+    <section>
+      <h2>Rotación controlada (laboratorio)</h2>
+      <table><thead><tr><th>Política</th><th>Estado</th><th>Pool</th><th>Intervalo</th><th>Cambios/hora</th><th></th></tr></thead>
+      <tbody id="rot"></tbody></table>
+      <div class="row">
+        <input id="rName" value="lab-rr" size="10">
+        <input id="rInt" type="number" value="30" min="10" style="width:70px"> s
+        <input id="rMax" type="number" value="20" min="1" max="60" style="width:60px"> /h
+        <button onclick="createRot()">Crear política (pausada) con las conexiones sanas</button>
+      </div>
+    </section>
+  </div>
+  <section>
+    <h2>Eventos y fallos (auditoría)</h2>
+    <div id="diag"></div>
+    <div class="events" id="events"></div>
+  </section>
+</main>
+<script>
+const TOKEN = "__CAUCE_TOKEN__";
+const H = { "Authorization": "Bearer " + TOKEN, "Content-Type": "application/json" };
+let lastSeq = 0; let SIM = false;
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+async function api(method, path, body) {
+  const r = await fetch("/api/v1" + path, { method, headers: H, body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json();
+  if (!r.ok) { alertBox(j.error ? j.error.message : r.status); throw j; }
+  return j;
+}
+function alertBox(msg) { const s = document.getElementById("status"); s.textContent = "Error: " + msg; s.className = "badge err"; }
+async function refresh() {
+  try {
+    const [d, c, t, r] = await Promise.all([api("GET","/diagnostics"), api("GET","/connections"), api("GET","/tasks"), api("GET","/rotation")]);
+    document.getElementById("mode").textContent = d.mode === "simulated" ? "SIMULACIÓN (no es prueba de hardware)" : "modo real";
+    document.getElementById("mode").className = "badge" + (d.mode === "simulated" ? " sim" : "");
+    SIM = d.mode === "simulated";
+    const u = document.getElementById("tUrl"); if (!u.dataset.init) { u.value = SIM ? "http://lab.sim/ok" : "http://127.0.0.1:8770/ok"; u.dataset.init = 1; }
+    document.getElementById("ver").textContent = "v" + d.version;
+    const st = document.getElementById("status"); st.textContent = "en línea · " + d.connections + " conexiones · " + d.tasks_running + " tareas activas"; st.className = "badge";
+    document.getElementById("diag").innerHTML = d.last_discovery_error ? `<p class="err">Detección: ${esc(d.last_discovery_error)}</p>` : "";
+    document.getElementById("selected").textContent = c.operator_selected || "automática";
+    const sel = document.getElementById("tConn"); const prev = sel.value;
+    sel.innerHTML = `<option value="">(automática)</option>` + c.connections.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join("");
+    sel.value = prev;
+    document.getElementById("conns").innerHTML = c.connections.map(x => {
+      const h = x.health || {}; const s = h.state || "unknown";
+      return `<tr><td><b>${esc(x.name)}</b>${x.operator_selected ? " ★" : ""}<br><small>${esc(x.id)} · ${esc(x.description)}</small></td>
+        <td>${esc(x.kind)}<br><small>${esc(x.link)}</small></td>
+        <td>${esc(x.primary_ip || "—")}<br><small>gw ${esc(x.gateway || "—")}</small></td>
+        <td class="${s}">${esc(s)}<br><small>${esc(h.last_error || "")}</small></td>
+        <td>${h.avg_latency_ms ?? "—"} ms<br><small>${h.availability_pct ?? "—"} %</small></td>
+        <td><small>${esc(x.independence)}<br>${esc(x.public_ip || "")}</small></td>
+        <td><button ${x.available ? "" : "disabled"} onclick="select('${esc(x.id)}')">Seleccionar</button>
+            <button onclick="check('${esc(x.id)}')">Probar</button>
+            ${SIM ? `<br><small>Simular:</small> <button onclick="simState('${esc(x.id)}','up')">funciona</button><button onclick="simState('${esc(x.id)}','down')">sin internet</button><button onclick="simState('${esc(x.id)}','disconnected')">desconectada</button>` : ""}</td></tr>`;
+    }).join("") || `<tr><td colspan=7>Sin conexiones detectadas</td></tr>`;
+    document.getElementById("tasks").innerHTML = t.tasks.slice().reverse().slice(0, 15).map(x =>
+      `<tr><td>${esc(x.name)}<br><small>${esc(x.id)}</small></td><td>${esc(x.state)}</td><td>${esc(x.lease.connection_id)}</td>
+       <td>${x.current_step}/${x.total_steps}</td><td><small>${esc(x.reason || "")}</small></td>
+       <td>${["completed","stopped","throttled","failed","needs_review"].includes(x.state) ? "" : `<button onclick="stopTask('${x.id}')">Detener</button>`}</td></tr>`).join("")
+       || `<tr><td colspan=6>Sin tareas</td></tr>`;
+    document.getElementById("rot").innerHTML = r.policies.map(p =>
+      `<tr><td>${esc(p.name)}</td><td>${esc(p.state)}<br><small>${esc(p.pause_reason || "")}</small></td><td><small>${esc(p.pool.join(", "))}</small></td>
+       <td>${p.interval_s}s</td><td>${p.changes_last_hour}/${p.max_changes_per_hour}</td>
+       <td>${p.state === "stopped" ? "" : `<button onclick="rot('${esc(p.name)}','activate')">Activar</button>
+           <button onclick="rot('${esc(p.name)}','pause')">Pausar</button><button onclick="rot('${esc(p.name)}','stop')">Detener</button>`}</td></tr>`).join("")
+       || `<tr><td colspan=6>Sin políticas</td></tr>`;
+    const ev = await api("GET", "/events?since=" + lastSeq);
+    const box = document.getElementById("events");
+    for (const e of ev.events) {
+      const div = document.createElement("div");
+      div.innerHTML = `<span class="k">#${e.seq} ${new Date(e.ts*1000).toLocaleTimeString()} ${esc(e.kind)}</span> ${esc(e.message)}`;
+      if (e.kind.startsWith("error") || e.kind.includes("throttled") || e.kind.includes("mismatch")) div.className = "err";
+      box.prepend(div); lastSeq = e.seq;
+    }
+  } catch (e) { if (!(e && e.error)) alertBox("API no disponible"); }
+}
+async function select(id) { await api("POST", "/selection", { connection_id: id, actor: "panel" }); refresh(); }
+async function simState(id, st) { await api("POST", `/sim/connections/${id}/state`, { state: st }); refresh(); }
+async function check(id) { await api("POST", `/connections/${id}/check`); refresh(); }
+async function stopTask(id) { await api("POST", `/tasks/${id}/stop`, { reason: "detenida desde el panel" }); refresh(); }
+async function stopAll() { await api("POST", "/stop-all", { reason: "botón Detener todo del panel" }); refresh(); }
+async function rot(n, a) { await api("POST", `/rotation/${n}/${a}`, { reason: "panel" }); refresh(); }
+async function createRot() {
+  const c = await api("GET", "/connections");
+  const pool = c.connections.filter(x => x.available).map(x => x.id);
+  await api("POST", "/rotation", { name: document.getElementById("rName").value, pool,
+    interval_s: +document.getElementById("rInt").value, max_changes_per_hour: +document.getElementById("rMax").value });
+  refresh();
+}
+async function startTask() {
+  const url = document.getElementById("tUrl").value, n = +document.getElementById("tSteps").value;
+  const conn = document.getElementById("tConn").value || null;
+  const steps = Array.from({ length: n }, () => ({ method: "GET", url }));
+  await api("POST", "/tasks", { name: "tarea-panel", owner: "panel", connection_id: conn, steps, step_delay_s: 1 });
+  refresh();
+}
+window.addEventListener("unhandledrejection", e => e.preventDefault());  // los errores de API ya se muestran en la barra de estado
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

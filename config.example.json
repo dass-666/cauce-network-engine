@@ -1,0 +1,15 @@
+{
+  "api": {"host": "127.0.0.1", "port": 8765},
+  "health": {
+    "targets": ["1.1.1.1:443", "9.9.9.9:443"],
+    "interval_s": 5,
+    "fail_threshold": 3,
+    "recover_threshold": 2
+  },
+  "lab": {"allowed_hosts": ["127.0.0.1", "localhost"]},
+  "discovery": {
+    "include_virtual": false,
+    "exclude": [],
+    "only": []
+  }
+}
