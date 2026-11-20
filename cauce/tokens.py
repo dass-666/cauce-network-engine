@@ -17,6 +17,7 @@ el registro y anotarlo en el registro de accesos sin escribir nunca el secreto.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import hmac
 import json
@@ -61,6 +62,7 @@ class TokenStore:
         self._lock = threading.Lock()
         self._tokens: dict[str, dict[str, Any]] = {}
         self._usage: dict[str, dict[str, Any]] = {}   # solo en memoria
+        self._unsaved = False   # hay una revocación vigente en memoria que aún no está en disco
         if path and os.path.exists(path):
             self._load()
 
@@ -69,16 +71,28 @@ class TokenStore:
         try:
             data = json.loads(read_secret(self._path))
             self._tokens = {t["id"]: t for t in data.get("tokens", [])}
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             # Registro ilegible (p. ej. de otro usuario): no se adivina nada, ningún token read es válido.
+            # Se aparta el archivo (no se borra) para que la siguiente credencial creada no lo sobrescriba
+            # en silencio y se pierdan los registros de revocación que contenía.
             self._tokens = {}
+            try:
+                os.replace(self._path, self._path + ".unreadable")
+            except OSError:
+                pass
 
     def _save(self) -> None:
         if not self._path:
             return
         tmp = self._path + ".tmp"
-        write_secret(tmp, json.dumps({"version": 1, "tokens": list(self._tokens.values())}))
-        os.replace(tmp, self._path)
+        try:
+            write_secret(tmp, json.dumps({"version": 1, "tokens": list(self._tokens.values())}))
+            os.replace(tmp, self._path)
+            self._unsaved = False
+        except OSError as e:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+            raise TokenError(503, "storage_error", f"No se pudo guardar el registro de credenciales: {e.__class__.__name__}")
 
     # --- administración -------------------------------------------------
     def create(self, name: str, scope: str = SCOPE_READ) -> tuple[dict[str, Any], str]:
@@ -99,7 +113,11 @@ class TokenStore:
             rec = {"id": tid, "name": name, "scope": scope, "created_at": round(time.time(), 3),
                    "revoked_at": None, "hash": _hash(secret)}
             self._tokens[tid] = rec
-            self._save()
+            try:
+                self._save()
+            except TokenError:
+                del self._tokens[tid]   # no queda una credencial activa cuyo secreto nadie recibió ni que sobreviva a un reinicio
+                raise
         return self._public(rec), f"cr1.{tid}.{secret}"
 
     def revoke(self, token_id: str) -> dict[str, Any]:
@@ -107,9 +125,17 @@ class TokenStore:
             rec = self._tokens.get(token_id)
             if not rec:
                 raise TokenError(404, "unknown_token", "Credencial inexistente")
-            if not rec.get("revoked_at"):
-                rec["revoked_at"] = round(time.time(), 3)
-                self._save()
+            if not rec.get("revoked_at") or self._unsaved:
+                rec["revoked_at"] = rec.get("revoked_at") or round(time.time(), 3)
+                try:
+                    self._save()
+                except TokenError as e:
+                    self._unsaved = True
+                    # Falla cerrado: la revocación SIGUE VIGENTE en memoria, pero no quedó en disco. Se avisa
+                    # con claridad porque, tras reiniciar el motor, la credencial volvería a ser válida.
+                    raise TokenError(503, "revocation_not_persisted",
+                                     "La credencial quedó revocada en memoria, pero no se pudo guardar en disco: "
+                                     "vuelve a revocarla cuando el almacenamiento funcione, o no reinicies el motor antes.") from e
             return self._public(rec)
 
     def _public(self, rec: dict[str, Any]) -> dict[str, Any]:

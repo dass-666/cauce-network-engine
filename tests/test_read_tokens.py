@@ -378,3 +378,97 @@ class CliAndCompatTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RevisionPr45Test(Base):
+    """Cierre de la revisión de las PR #4 y #5: cobertura exhaustiva, almacenamiento y secretos."""
+
+    READ_ROUTES = {("GET", "/api/v1/status/connectivity"), ("GET", "/api/v1/status/events")}
+
+    def test_every_registered_route_is_denied_to_read_unless_whitelisted(self):
+        """Recorre las rutas REALES del servidor (no una lista a mano): una ruta nueva sin declarar queda como admin."""
+        import re
+        allowed, denied = set(), 0
+        for method, pat, _fn, need in self.api.routes:
+            raw = pat.pattern[1:-1]
+            def fill(m):
+                body = m.group(1)
+                return next(c for c in ("sim-a", "00000000", "ls_abc", "tk_abc", "activate", "r", "1")
+                            if re.fullmatch(body, c))
+            path = re.sub(r"\(\?P<\w+>((?:[^()]|\([^()]*\))*)\)", fill, raw)
+            if not pat.match(path):
+                path = None
+            self.assertIsNotNone(path, f"no se pudo construir una ruta de ejemplo para {raw}")
+            if need == "read":
+                allowed.add((method, path))
+                continue
+            if path == "/api/v1/ping":   # público por diseño (sin token), no expone nada sensible
+                continue
+            st, data = self.raw(method, path, self.read_token, {} if method != "GET" else None)
+            self.assertEqual((st, self.code(data)), (403, "insufficient_scope"), f"{method} {path}")
+            denied += 1
+        self.assertEqual(allowed, self.READ_ROUTES, "el conjunto de rutas accesibles a read cambió: revisar a propósito")
+        self.assertGreaterEqual(denied, 20)
+        self.assertEqual(len(self.admin.tokens()), 1, "un token read no debe crear ni revocar credenciales")
+
+    def test_admin_token_never_in_read_responses_or_logs(self):
+        texts = []
+        for path in ("/api/v1/status/connectivity", "/api/v1/status/events?since=0", "/api/v1/ping"):
+            texts.append(self.raw("GET", path, self.read_token)[1])
+        texts.append(self.raw("GET", "/api/v1/connections", self.read_token)[1])   # 403
+        texts.append(self.raw("GET", "/api/v1/status/connectivity", "cr1.deadbeef." + "a" * 30)[1])  # 401
+        for t in texts:
+            self.assertNotIn(self.api.token, t)
+        for name in os.listdir(self.eng.cfg["data_dir"]):
+            p = os.path.join(self.eng.cfg["data_dir"], name)
+            if name in ("access.jsonl", "audit.jsonl"):
+                with open(p, encoding="utf-8") as fh:
+                    self.assertNotIn(self.api.token, fh.read(), name)
+
+    def _store(self):
+        d = tempfile.mkdtemp()
+        return TokenStore(os.path.join(d, "tokens.dat"))
+
+    def test_create_rolls_back_when_storage_fails(self):
+        from unittest import mock
+        st = self._store()
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
+            with self.assertRaises(TokenError) as cm:
+                st.create("sistema-a")
+        self.assertEqual((cm.exception.status, cm.exception.code), (503, "storage_error"))
+        self.assertEqual(st.list(), [], "no debe quedar una credencial fantasma")
+        st.create("sistema-a")   # el nombre sigue libre
+
+    def test_revocation_holds_in_memory_and_can_be_retried_when_storage_fails(self):
+        from unittest import mock
+        st = self._store()
+        rec, tok = st.create("sistema-a")
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("solo lectura")):
+            with self.assertRaises(TokenError) as cm:
+                st.revoke(rec["id"])
+        self.assertEqual(cm.exception.code, "revocation_not_persisted")
+        with self.assertRaises(TokenError) as cm:
+            st.verify(tok)
+        self.assertEqual(cm.exception.code, "token_revoked", "falla cerrado: sigue revocada en memoria")
+        st.revoke(rec["id"])   # reintento con el almacenamiento sano: ahora sí se guarda
+        with self.assertRaises(TokenError) as cm:
+            TokenStore(st._path).verify(tok)
+        self.assertEqual(cm.exception.code, "token_revoked", "tras reiniciar sigue revocada")
+
+    def test_unreadable_store_is_set_aside_not_overwritten(self):
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "tokens.dat")
+        with open(p, "wb") as fh:
+            fh.write(b"basura")
+        st = TokenStore(p)
+        st.create("sistema-a")
+        with open(p + ".unreadable", "rb") as fh:
+            self.assertEqual(fh.read(), b"basura")
+
+    def test_api_returns_503_on_storage_error_and_engine_keeps_serving(self):
+        from unittest import mock
+        with mock.patch("cauce.tokens.write_secret", side_effect=OSError("disco lleno")):
+            with self.assertRaises(CauceAPIError) as cm:
+                self.admin.create_token("otro")
+        self.assertEqual(cm.exception.status, 503)
+        self.assertEqual(self.raw("GET", "/api/v1/status/connectivity", self.read_token)[0], 200)
