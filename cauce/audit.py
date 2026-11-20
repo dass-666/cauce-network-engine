@@ -48,6 +48,7 @@ class AuditLog:
         self._seq = 0
         self._last_hash = GENESIS
         self._subscribers: list[Callable[[dict[str, Any]], None]] = []
+        self.epoch = os.urandom(4).hex()   # cambia en cada arranque: permite a un consumidor detectar reinicios
         if path:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
             self._resume_from_file(path)
@@ -100,6 +101,18 @@ class AuditLog:
         with self._lock:
             evs = [e for e in self._events if e["seq"] > since and (kind is None or e["kind"].startswith(kind))]
         return evs[-limit:]
+
+    def events_page(self, since: int, kinds: tuple[str, ...], limit: int) -> tuple[list[dict[str, Any]], bool, bool]:
+        """Lectura para consumidores: los PRIMEROS ``limit`` eventos con seq > since (orden cronológico).
+
+        Devuelve (eventos, hay_mas, hueco). ``hueco`` es True si se descartaron eventos entre ``since`` y el
+        más antiguo que aún se conserva en memoria; en ese caso el consumidor debe releer el estado completo.
+        """
+        with self._lock:
+            oldest = self._events[0]["seq"] if self._events else self._seq + 1
+            gap = since + 1 < oldest and since < self._seq
+            evs = [e for e in self._events if e["seq"] > since and e["kind"].startswith(kinds)]
+        return evs[:limit], len(evs) > limit, gap
 
     @property
     def last_seq(self) -> int:

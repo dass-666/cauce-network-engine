@@ -2,8 +2,11 @@
 
 Seguridad:
 - Escucha únicamente en 127.0.0.1 (validado en config y aquí).
-- Token de sesión aleatorio por arranque, exigido en todas las rutas /api/v1
-  salvo /api/v1/ping. Se envía como ``Authorization: Bearer <token>``.
+- Token de sesión aleatorio por arranque (permiso ``admin``), exigido en todas las
+  rutas /api/v1 salvo /api/v1/ping. Se envía como ``Authorization: Bearer <token>``.
+- Credenciales ``read`` por sistema consumidor (cauce/tokens.py). Cada ruta declara
+  en el servidor el permiso que exige (por defecto ``admin``); si falta, 403
+  ``insufficient_scope``. Un token ``read`` solo llega a /status/*.
 - Comprobación de cabecera Host (protección frente a DNS rebinding) y de
   Origin en peticiones que modifican estado (protección frente a CSRF desde
   páginas web abiertas en el navegador).
@@ -27,6 +30,10 @@ from . import API_VERSION, __version__
 from .engine import Engine, EngineError
 from .policy import PolicyError
 from .routing import RouteError
+from .status import MAX_EVENTS, connectivity_view, events_view
+from .tokens import SCOPE_ADMIN, SCOPE_READ, AccessLog, Principal, TokenError, TokenStore
+
+_RANK = {SCOPE_READ: 1, SCOPE_ADMIN: 2}
 
 MAX_BODY = 256 * 1024
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
@@ -38,7 +45,7 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-Route = tuple[str, re.Pattern, Callable]
+Route = tuple[str, re.Pattern, Callable, str]   # método, patrón, función, permiso exigido
 
 
 class CauceAPI:
@@ -48,6 +55,9 @@ class CauceAPI:
         self.engine = engine
         self.token = token or secrets.token_urlsafe(32)
         self.host = host
+        data_dir = engine.cfg.get("data_dir")
+        self.tokens = TokenStore(os.path.join(data_dir, "tokens.dat") if data_dir else None)
+        self.access = AccessLog(os.path.join(data_dir, "access.jsonl") if data_dir else None)
         self.routes: list[Route] = []
         self._register()
         api = self
@@ -75,9 +85,10 @@ class CauceAPI:
         self.shutdown_requested = threading.Event()
 
     # ------------------------------------------------------------------
-    def _route(self, method: str, pattern: str):
+    def _route(self, method: str, pattern: str, scope: str = SCOPE_ADMIN):
+        """Registra una ruta. El permiso por defecto es ``admin``: una ruta nueva nunca queda abierta a ``read`` por olvido."""
         def deco(fn):
-            self.routes.append((method, re.compile("^" + pattern + "$"), fn))
+            self.routes.append((method, re.compile("^" + pattern + "$"), fn, scope))
             return fn
         return deco
 
@@ -89,6 +100,50 @@ class CauceAPI:
         @r("GET", P + "/ping")
         def ping(req, m, q, body):
             return {"ok": True, "service": "cauce-network-engine", "version": __version__, "api": API_VERSION}
+
+        @r("GET", P + "/status/connectivity", SCOPE_READ)
+        def status_connectivity(req, m, q, body):
+            self._only_params(q, ())
+            return connectivity_view(e, time.time())
+
+        @r("GET", P + "/status/events", SCOPE_READ)
+        def status_events(req, m, q, body):
+            self._only_params(q, ("since", "limit"))
+            since = int(q.get("since", ["0"])[0] or 0)
+            limit = int(q.get("limit", ["200"])[0] or 200)
+            if since < 0 or limit < 1:
+                raise ApiError(400, "invalid_request", "since >= 0 y limit >= 1")
+            return events_view(e, since, min(limit, MAX_EVENTS))
+
+        @r("GET", P + "/tokens")
+        def tokens_list(req, m, q, body):
+            return dict(self.tokens.status(), tokens=self.tokens.list())
+
+        @r("POST", P + "/tokens")
+        def tokens_create(req, m, q, body):
+            rec, secret = self.tokens.create(str(body.get("name") or ""), str(body.get("scope") or SCOPE_READ))
+            e.audit.record("token.created", f"Credencial creada para {rec['name']} (permiso {rec['scope']})",
+                           grant_id=rec["id"], name=rec["name"], scope=rec["scope"])
+            return dict(rec, token=secret, note="Este es el único momento en que se muestra el token."), 201
+
+        @r("POST", P + "/tokens/recover")
+        def tokens_recover(req, m, q, body):
+            res = self.tokens.recover()
+            if res["recovered"]:
+                e.audit.record("token.recovered", "Almacén de credenciales verificado; bloqueo levantado")
+            return res
+
+        @r("DELETE", P + r"/tokens/(?P<tid>[0-9a-f]{8})")
+        def tokens_revoke(req, m, q, body):
+            try:
+                rec = self.tokens.revoke(m["tid"])
+            except TokenError as err:
+                if err.code == "revocation_not_persisted":   # sin secretos: solo el id
+                    e.audit.record("token.revocation_failed", "Revocación NO persistida; credenciales read bloqueadas",
+                                   grant_id=m["tid"])
+                raise
+            e.audit.record("token.revoked", f"Credencial revocada: {rec['name']}", grant_id=rec["id"], name=rec["name"])
+            return rec
 
         @r("GET", P + "/diagnostics")
         def diag(req, m, q, body):
@@ -236,11 +291,25 @@ class CauceAPI:
         origin = h.headers.get("Origin")
         return origin is None or origin in (f"http://127.0.0.1:{self.port}", f"http://localhost:{self.port}")
 
-    def _auth_ok(self, h: BaseHTTPRequestHandler) -> bool:
+    @staticmethod
+    def _only_params(q: dict, allowed: tuple[str, ...]) -> None:
+        """Las vistas de lectura rechazan parámetros desconocidos (p. ej. ``refresh=1``) en vez de ignorarlos."""
+        bad = sorted(set(q) - set(allowed))
+        if bad:
+            raise ApiError(400, "unsupported_parameter", f"Parámetro no admitido en esta vista: {', '.join(bad)}")
+
+    def _authenticate(self, h: BaseHTTPRequestHandler) -> Principal:
         a = h.headers.get("Authorization") or ""
-        return a.startswith("Bearer ") and hmac.compare_digest(a[7:].strip(), self.token)
+        presented = a[7:].strip() if a.startswith("Bearer ") else ""
+        if presented and hmac.compare_digest(presented, self.token):
+            return Principal(SCOPE_ADMIN, "session", "operator")
+        try:
+            return self.tokens.verify(presented)
+        except TokenError as e:
+            raise ApiError(e.status, e.code, e.message)
 
     def _send(self, h: BaseHTTPRequestHandler, status: int, payload: Any, ctype: str = "application/json; charset=utf-8") -> None:
+        self._log_access(h, status)
         data = payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         h.send_response(status)
         h.send_header("Content-Type", ctype)
@@ -253,9 +322,24 @@ class CauceAPI:
         h.wfile.write(data)
 
     def _error(self, h, status: int, code: str, message: str) -> None:
+        h._cauce_code = code
         self._send(h, status, {"error": {"code": code, "message": message, "status": status}})
 
     def _dispatch(self, h: BaseHTTPRequestHandler, method: str) -> None:
+        h._cauce_principal = None
+        h._cauce_code = ""
+        h._cauce_method = method
+        self._dispatch_inner(h, method)
+
+    def _log_access(self, h: BaseHTTPRequestHandler, status: int) -> None:
+        """Se anota ANTES de enviar la respuesta (así el registro existe cuando el cliente la recibe)."""
+        url = urlsplit(getattr(h, "path", ""))
+        if url.path.startswith("/api/"):   # solo se anotan las claves de la consulta, nunca los valores
+            keys = ",".join(sorted(parse_qs(url.query)))
+            self.access.record(getattr(h, "_cauce_principal", None), getattr(h, "_cauce_method", "?"),
+                               url.path + (f"?{keys}" if keys else ""), status, getattr(h, "_cauce_code", ""))
+
+    def _dispatch_inner(self, h: BaseHTTPRequestHandler, method: str) -> None:
         try:
             if not self._host_ok(h):
                 return self._error(h, 421, "bad_host", "Cabecera Host no permitida")
@@ -270,8 +354,15 @@ class CauceAPI:
                 return self._send(h, 200, html, "text/html; charset=utf-8")
             if not url.path.startswith(f"/api/{API_VERSION}/"):
                 return self._error(h, 404, "not_found", "Ruta inexistente")
-            if url.path != f"/api/{API_VERSION}/ping" and not self._auth_ok(h):
-                return self._error(h, 401, "unauthorized", "Falta token válido (Authorization: Bearer ...)")
+            if url.path != f"/api/{API_VERSION}/ping":
+                h._cauce_principal = principal = self._authenticate(h)
+                # Autorización en el servidor, ANTES de leer el cuerpo o ejecutar nada.
+                for m_, pat, _fn, need in self.routes:
+                    if m_ == method and pat.match(url.path):
+                        if _RANK[principal.scope] < _RANK[need]:
+                            raise ApiError(403, "insufficient_scope",
+                                           f"Esta credencial ({principal.scope}) no tiene permiso {need} para {method} {url.path}")
+                        break
             if method != "GET" and not self._origin_ok(h):
                 return self._error(h, 403, "bad_origin", "Origin no permitido")
             body: dict = {}
@@ -287,7 +378,7 @@ class CauceAPI:
                     if not isinstance(body, dict):
                         return self._error(h, 400, "invalid_json", "Se esperaba un objeto JSON")
             q = parse_qs(url.query)
-            for m_, pat, fn in self.routes:
+            for m_, pat, fn, _need in self.routes:
                 if m_ != method:
                     continue
                 match = pat.match(url.path)
@@ -299,6 +390,8 @@ class CauceAPI:
                     return self._send(h, status, out)
             return self._error(h, 404, "not_found", "Ruta inexistente")
         except ApiError as e:
+            self._error(h, e.status, e.code, e.message)
+        except TokenError as e:
             self._error(h, e.status, e.code, e.message)
         except EngineError as e:
             self._error(h, e.status, e.code, e.message)

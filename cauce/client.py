@@ -81,6 +81,24 @@ class CauceClient:
     def connection(self, connection_id: str) -> dict:
         return self._call("GET", f"/connections/{quote(connection_id)}")
 
+    # --- credenciales (solo administración) -----------------------------
+    def create_token(self, name: str, scope: str = "read") -> dict:
+        return self._call("POST", "/tokens", {"name": name, "scope": scope})
+
+    def tokens(self) -> list[dict]:
+        return self._call("GET", "/tokens")["tokens"]
+
+    def tokens_status(self) -> dict:
+        """Estado del almacén: ``locked`` (motivo o None), ``pending_revocations`` y ``lock_recorded_on_disk``."""
+        d = self._call("GET", "/tokens")
+        return {k: v for k, v in d.items() if k != "tokens"}
+
+    def recover_tokens(self) -> dict:
+        return self._call("POST", "/tokens/recover", {})
+
+    def revoke_token(self, token_id: str) -> dict:
+        return self._call("DELETE", f"/tokens/{quote(token_id)}")
+
     def events(self, since: int = 0, kind: Optional[str] = None, limit: int = 200) -> dict:
         q = f"?since={since}&limit={limit}" + (f"&kind={quote(kind)}" if kind else "")
         return self._call("GET", "/events" + q)
@@ -136,3 +154,40 @@ class CauceClient:
 
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})
+
+
+class CauceReadClient:
+    """Cliente de SOLO LECTURA para consumidores con una credencial ``read``.
+
+    No tiene métodos de administración, rutas, tareas ni ``refresh``: aunque los tuviera, el servidor
+    respondería 403. Solo llama a /ping, /status/connectivity y /status/events.
+
+    Regla de fallo seguro: si el motor no responde, ``connectivity_or_unknown`` devuelve
+    ``state="engine_unreachable"`` con ``usable=None`` («sin información»). Eso NO significa
+    que el equipo no tenga internet; solo que Network Engine no contestó.
+    """
+
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0):
+        self._c = CauceClient(token, host, port, timeout)
+
+    @classmethod
+    def from_token_file(cls, token_path: str, port: int = 8765, **kw) -> "CauceReadClient":
+        """Lee el token de un archivo creado con ``cauce token create --out`` (protegido con DPAPI en Windows)."""
+        from .secrets_store import read_secret
+        return cls(read_secret(token_path), port=port, **kw)
+
+    def ping(self) -> dict:
+        return self._c.ping()
+
+    def connectivity(self) -> dict:
+        return self._c._call("GET", "/status/connectivity")
+
+    def events(self, since: int = 0, limit: int = 200) -> dict:
+        return self._c._call("GET", f"/status/events?since={int(since)}&limit={int(limit)}")
+
+    def connectivity_or_unknown(self) -> dict:
+        try:
+            return self.connectivity()
+        except (OSError, ValueError):   # motor ausente, rechazo de conexión, tiempo agotado, JSON ilegible
+            return {"schema": "cauce.connectivity/1", "state": "engine_unreachable", "usable": None,
+                    "reason": "engine_unreachable", "connections": []}

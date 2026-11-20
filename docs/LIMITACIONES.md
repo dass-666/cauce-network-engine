@@ -34,6 +34,8 @@ simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno
 
 ## Limitaciones de diseño conocidas
 
+- **Credenciales `read` (rama `feat/tokens-lectura`)**: no aíslan entre procesos del mismo usuario de Windows ni sustituyen a un usuario/servicio separado; sin límite de peticiones por credencial. Ver [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md) §6.
+
 1. **Selección por IP de origen, no por tabla de rutas.** Es la forma de no tocar la configuración global
    ni afectar a otras apps. En Windows funciona si la interfaz elegida tiene su propia ruta por defecto
    (gateway). Si una interfaz no tiene gateway (p. ej. red local sin internet), el tráfico enlazado a su IP
