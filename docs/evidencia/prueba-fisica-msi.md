@@ -1,6 +1,6 @@
 # Prueba física en Windows 11 (PC MSI) — resultados informados
 
-> **Origen de estos datos:** los informó Ronaldo el 2026-11-20 tras ejecutarlo en su PC. No se ejecutaron
+> **Categoría: REPORTADO POR EL USUARIO.** Los informó el propietario del equipo el 2026-11-20 tras ejecutarlo en su PC. No se ejecutaron
 > desde la nube ni se adjuntó la salida completa, así que aquí constan como *informados por el propietario*,
 > no como verificados por la CI. La versión instalada en el MSI era el commit `bfa9c49`.
 
@@ -13,12 +13,12 @@
 
 | Comprobación | Resultado informado |
 |---|---|
-| Sistema | Windows 11, build 26200 |
+| Sistema | Windows 11, build 26200 (entorno compatible) |
 | Python | 3.13.14 |
 | PowerShell y módulo NetAdapter | Disponibles |
 | Privilegios | Usuario normal (sin administrador) |
 | Carpeta de datos | Escribible |
-| Puerto local 8765 | Libre |
+| Puerto local 8765 (API local disponible) | Libre |
 | Interfaces detectadas | 4 |
 | Salidas físicas utilizables | 1 |
 
@@ -42,3 +42,9 @@ Windows con `powershell.exe` real; **no** se ha vuelto a ejecutar en el MSI (hab
   La conmutación, el retorno y la rotación solo están probados en el simulador y con sockets en loopback.
 - Selección de interfaz por IP de origen con dos salidas reales (modelo *strong host* de Windows).
 - Independencia real de dos ISP (`docs/HARDWARE.md` describe la prueba pendiente).
+
+## Reglas para esta evidencia
+
+- No se accedió remotamente al MSI ni se modificó su instalación.
+- La versión v0.1.0 publicada (`1551223`) incluye la corrección de codificación, que el MSI todavía no tiene
+  instalada. Para comprobarla allí: reinstalar con `scripts\windows\install.cmd` y ejecutar `cauce discover`.
