@@ -36,6 +36,7 @@ _NDIS_MEDIUM = {
     14: Kind.ETHERNET,   # 802_3
 }
 
+_GUEST_NIC_HINTS = ("hyper-v network adapter", "vmxnet3", "virtio", "red hat virtio", "intel(r) 82574l")
 _VIRTUAL_HINTS = ("hyper-v", "virtualbox", "vmware", "wsl", "docker", "vethernet", "loopback", "kernel debug")
 _VPN_HINTS = ("vpn", "tap-windows", "wireguard", "openvpn", "wintun", "tailscale", "zerotier", "fortinet", "cisco anyconnect")
 _TETHER_HINTS = ("rndis", "remote ndis", "android", "iphone", "apple mobile device ethernet")
@@ -54,6 +55,10 @@ def classify(adapter: dict[str, Any]) -> tuple[Kind, bool]:
     """Devuelve (tipo, es_virtual) a partir de un objeto de Get-NetAdapter."""
     desc = f"{adapter.get('Name', '')} {adapter.get('InterfaceDescription', '')}".lower()
     virtual = bool(adapter.get("Virtual")) or adapter.get("HardwareInterface") is False
+    if any(h in desc for h in _GUEST_NIC_HINTS):
+        # Tarjeta de red de un Windows que corre DENTRO de una máquina virtual: para ese
+        # Windows es su salida real (hallado en la CI de GitHub, Windows Server en Azure).
+        return Kind.ETHERNET, False
     if any(h in desc for h in _VPN_HINTS):
         return Kind.VPN, True
     if any(h in desc for h in _VIRTUAL_HINTS):

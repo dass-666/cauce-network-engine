@@ -44,9 +44,10 @@ test_ip_gateway_state (test_discovery.WindowsParserTest.test_ip_gateway_state) .
 test_kinds (test_discovery.WindowsParserTest.test_kinds) ... ok
 test_same_public_ip_means_shared_even_with_distinct_gateways (test_discovery.WindowsParserTest.test_same_public_ip_means_shared_even_with_distinct_gateways) ... ok
 test_single_object_instead_of_array (test_discovery.WindowsParserTest.test_single_object_instead_of_array) ... ok
+test_vm_guest_nic_is_not_virtual (test_discovery.WindowsParserTest.test_vm_guest_nic_is_not_virtual) ... ok
 test_ten_step_scenario (test_scenario.ScenarioTest.test_ten_step_scenario) ... ok
 
 ----------------------------------------------------------------------
-Ran 41 tests in 3.107s
+Ran 42 tests in 3.101s
 
 OK

@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         conns = analyze(prov.discover())
         for c in conns:
             print(f"{c.id:<10} {c.name[:28]:<28} {c.kind.value:<9} {c.link.value:<9} ip={c.primary_ip or '-':<15} gw={c.gateway or '-':<15} "
-                  f"virtual={'sí' if c.is_virtual else 'no'} salida={c.independence.value}")
+                  f"virtual={'sí' if c.is_virtual else 'no'} salida={c.independence.value}  [{c.description}]")
         return 0
     if a.cmd == "doctor":
         from .doctor import print_report, run_checks

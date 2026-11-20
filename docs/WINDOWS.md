@@ -1,6 +1,6 @@
 # Instalación y operación en Windows 11
 
-> Estado: scripts escritos y revisados, **no ejecutados todavía en Windows real** (ver LIMITACIONES.md).
+> Estado: `install.ps1`, `doctor` y `discover` se ejecutan en Windows Server 2025 en la CI de GitHub. Falta probarlos en tu PC físico (ver LIMITACIONES.md).
 
 ## Requisitos
 

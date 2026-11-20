@@ -10,9 +10,10 @@ en Windows 11, con una **API versionada solo en 127.0.0.1** para que otras aplic
 - La rotación es solo para laboratorio propio, con límites duros; **nunca** se usa para sortear límites,
   bloqueos ni restricciones de terceros: una respuesta 429/403 detiene la operación.
 
-> **v0.1.0 — estado honesto:** la lógica está probada (40 pruebas + escenario de 10 pasos) en Linux con
-> simulador y sockets reales en loopback. Lo específico de Windows está implementado pero **aún no se ha
-> ejecutado en Windows real**. Ver [docs/LIMITACIONES.md](docs/LIMITACIONES.md).
+> **v0.1.0, estado real:** la lógica está probada (42 pruebas y el escenario de 10 pasos) en Linux y en
+> Windows Server 2025 (CI de GitHub, máquina virtual con una sola red). La detección, el instalador y DPAPI
+> ya se han ejecutado en Windows. **No** se ha probado aún en un PC físico ni con dos proveedores reales.
+> Ver [docs/LIMITACIONES.md](docs/LIMITACIONES.md).
 
 ## Inicio rápido
 

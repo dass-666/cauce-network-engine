@@ -25,6 +25,7 @@ jobs:
         run: |
           python -m cauce doctor
           python -m cauce discover --raw reports/windows-runner-capture.json
+          Get-Content reports/windows-runner-capture.json
       - name: Instalación aislada (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

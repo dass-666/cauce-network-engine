@@ -51,6 +51,15 @@ class WindowsParserTest(unittest.TestCase):
         analyze(list(c.values()))
         self.assertEqual(c["Celular"].independence, Independence.SHARED)
 
+    def test_vm_guest_nic_is_not_virtual(self):
+        # Caso real observado en la CI de GitHub (Windows Server en Azure): la NIC del
+        # invitado se describe como "Microsoft Hyper-V Network Adapter" y es su única salida.
+        kind, virtual = windows.classify({"Name": "Ethernet 3", "InterfaceDescription": "Microsoft Hyper-V Network Adapter #2",
+                                          "Virtual": True, "HardwareInterface": False, "NdisPhysicalMedium": 14})
+        self.assertEqual((kind, virtual), (Kind.ETHERNET, False))
+        kind, virtual = windows.classify({"Name": "vEthernet (Default Switch)", "InterfaceDescription": "Hyper-V Virtual Ethernet Adapter"})
+        self.assertEqual((kind, virtual), (Kind.VIRTUAL, True))
+
     def test_single_object_instead_of_array(self):
         # ConvertTo-Json convierte arrays de un elemento en objeto si no se usa @()
         payload = {"adapters": {"Name": "Ethernet", "ifIndex": 3, "Status": "Up", "NdisPhysicalMedium": 14},
