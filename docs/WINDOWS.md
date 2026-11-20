@@ -5,7 +5,9 @@
 ## Requisitos
 
 - Windows 10/11 con PowerShell 5.1+ (incluido) y el módulo NetAdapter (incluido).
-- Python 3.10+ de python.org (con *py launcher*). La versión de Microsoft Store también funciona pero no se recomienda.
+- Python 3.10 o superior (probado con 3.10, 3.12 y 3.13), de python.org o de Microsoft Store. El lanzador `py` es **opcional**:
+  el instalador prueba `py -3`, `python` y `python3`, comprueba la versión real de cada uno y usa el primero que sirva.
+  También puedes indicarlo a mano: `install.cmd -Python C:\ruta\python.exe`.
 - **No** necesita administrador.
 
 ## Instalación aislada
