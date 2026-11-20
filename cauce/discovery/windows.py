@@ -12,20 +12,34 @@ añadirla a ``tests/fixtures``.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import subprocess
 from typing import Any, Optional
 
 from ..models import Connection, Kind, LinkState
 
-PS_SCRIPT = r"""
+PS_BODY = r"""
 $ErrorActionPreference = 'Stop'
 $adapters = @(Get-NetAdapter -IncludeHidden:$false | Select-Object Name, InterfaceDescription, ifIndex, Status, MacAddress, LinkSpeed, MediaType, PhysicalMediaType, NdisPhysicalMedium, Virtual, HardwareInterface)
 $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object InterfaceIndex, IPAddress, PrefixLength, PrefixOrigin, AddressState)
 $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object ifIndex, NextHop, RouteMetric)
 $ipif = @(Get-NetIPInterface -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object ifIndex, InterfaceMetric, ConnectionState)
-ConvertTo-Json -Depth 4 -Compress -InputObject @{ adapters = $adapters; addresses = $addresses; routes = $routes; ipinterfaces = $ipif }
+$data = @{ adapters = $adapters; addresses = $addresses; routes = $routes; ipinterfaces = $ipif }
 """
+
+# La salida de PowerShell 5.1 por tubería usa la página de códigos OEM (cp850 en
+# Windows en español) y Python la leía como cp1252: "Conexión" llegaba como
+# "Conexi¢n". Para no depender de la consola, el JSON se codifica en UTF-8 y se
+# envía en Base64 (solo caracteres ASCII), que Python decodifica sin ambigüedad.
+PS_EMIT = r"""
+$json = ConvertTo-Json -Depth 4 -Compress -InputObject $data
+[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+"""
+
+PS_SCRIPT = PS_BODY + PS_EMIT
+
 
 # NDIS_PHYSICAL_MEDIUM (ntddndis.h)
 _NDIS_MEDIUM = {
@@ -154,6 +168,31 @@ def parse(payload: dict[str, Any]) -> list[Connection]:
     return out
 
 
+def decode_ps_output(stdout: str) -> Any:
+    """Decodifica la salida de PS_EMIT: Base64 de un JSON en UTF-8."""
+    text = (stdout or "").strip()
+    if not text:
+        raise RuntimeError("PowerShell no devolvió datos")
+    line = text.splitlines()[-1].strip()
+    try:
+        payload = base64.b64decode(line, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise RuntimeError(f"Salida de PowerShell inesperada: {text[:200]!r}") from e
+    return json.loads(payload.decode("utf-8"))
+
+
+def run_powershell_json(script: str, timeout: float) -> Any:
+    """Ejecuta un script de solo lectura que termina con PS_EMIT y devuelve el JSON."""
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        capture_output=True, text=True, encoding="ascii", errors="replace", timeout=timeout,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(f"PowerShell falló ({proc.returncode}): {(proc.stderr or '').strip()[:500]}")
+    return decode_ps_output(proc.stdout)
+
+
 class WindowsDiscovery:
     name = "windows"
 
@@ -161,14 +200,7 @@ class WindowsDiscovery:
         self.timeout = timeout
 
     def raw(self) -> dict[str, Any]:
-        proc = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", PS_SCRIPT],
-            capture_output=True, text=True, timeout=self.timeout,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(f"PowerShell falló ({proc.returncode}): {proc.stderr.strip()[:500]}")
-        return json.loads(proc.stdout)
+        return run_powershell_json(PS_SCRIPT, self.timeout)
 
     def discover(self) -> list[Connection]:
         return parse(self.raw())

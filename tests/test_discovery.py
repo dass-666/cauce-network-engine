@@ -1,6 +1,10 @@
+import base64
 import json
 import os
+import subprocess
+import sys
 import unittest
+from unittest import mock
 
 from helpers import FIXTURES  # noqa: F401  (ajusta sys.path)
 from cauce.discovery import linux, windows
@@ -84,6 +88,47 @@ class WindowsRealCaptureTest(unittest.TestCase):
         self.assertEqual(usable[0].gateway, "10.1.0.1")
         self.assertEqual(usable[0].route_metric, 6)
         self.assertEqual(usable[0].independence, Independence.LIKELY)
+
+
+class PowerShellEncodingTest(unittest.TestCase):
+    """Regresión: en el MSI la descripción salía como «Conexi¢n» (cp850 leído como cp1252)."""
+
+    NAME = "Conexión de red Bluetooth · Wi\u2011Fi"
+
+    def _fake_run(self, stdout, returncode=0, stderr=""):
+        return mock.patch.object(windows.subprocess, "run",
+                                 return_value=subprocess.CompletedProcess([], returncode, stdout, stderr))
+
+    def test_base64_utf8_round_trip(self):
+        payload = json.dumps({"adapters": [{"InterfaceDescription": self.NAME}]}, ensure_ascii=False)
+        out = "aviso previo\r\n" + base64.b64encode(payload.encode("utf-8")).decode("ascii") + "\r\n"
+        with self._fake_run(out) as run:
+            data = windows.WindowsDiscovery().raw()
+        self.assertEqual(data["adapters"][0]["InterfaceDescription"], self.NAME)
+        kwargs = run.call_args.kwargs
+        self.assertEqual(kwargs["encoding"], "ascii")  # la salida esperada es solo ASCII
+        self.assertIn("ToBase64String", run.call_args.args[0][-1])
+
+    def test_garbage_output_gives_clear_error(self):
+        with self._fake_run("Conexi\u00a2n {no es base64}"):
+            with self.assertRaisesRegex(RuntimeError, "inesperada"):
+                windows.WindowsDiscovery().raw()
+
+    def test_powershell_failure(self):
+        with self._fake_run("", returncode=1, stderr="Get-NetAdapter: error"):
+            with self.assertRaisesRegex(RuntimeError, "PowerShell falló"):
+                windows.WindowsDiscovery().raw()
+
+    def test_script_is_read_only(self):
+        verbs = {w.split("-")[0] for w in __import__("re").findall(r"\b([A-Z][a-z]+-Net[A-Za-z]+)", windows.PS_SCRIPT)}
+        self.assertEqual(verbs, {"Get"})
+
+    @unittest.skipUnless(sys.platform == "win32", "necesita powershell.exe")
+    def test_real_powershell_non_ascii(self):
+        # Texto construido dentro de PowerShell (como el que da Get-NetAdapter), no pasado por la línea de órdenes
+        script = "$data = @{ adapters = @(@{ InterfaceDescription = 'Conexi' + [char]0x00F3 + 'n de red' }) }" + windows.PS_EMIT
+        data = windows.run_powershell_json(script, 60)
+        self.assertEqual(data["adapters"][0]["InterfaceDescription"], "Conexión de red")
 
 
 class LinuxParserTest(unittest.TestCase):
