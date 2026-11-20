@@ -1,6 +1,7 @@
 # Instalación y operación en Windows 11
 
-> Estado: `install.ps1`, `doctor` y `discover` se ejecutan en Windows Server 2025 en la CI de GitHub. Falta probarlos en tu PC físico (ver LIMITACIONES.md).
+> Estado: `install.ps1`, `doctor` y `discover` se ejecutan en la CI de GitHub (Windows Server 2025) y, según informó
+> el propietario, en un PC MSI con Windows 11 build 26200 y Python 3.13.14 (ver `evidencia/prueba-fisica-msi.md`).
 
 ## Requisitos
 
@@ -61,6 +62,11 @@ aviso, puedes **denegarlo**: el motor funciona igual en local.
 El motor nunca cambia la ruta de Windows, pero sondea la salud de cada interfaz. Para que ni siquiera
 sondee ni use tu conexión de trabajo, copia `config.example.json`, añade su nombre en
 `"discovery": {"exclude": ["Wi-Fi"]}` y arranca con `cauce --config mi-config.json run`.
+
+## Actualizar una instalación existente
+
+Vuelve a ejecutar `scripts\windows\install.cmd` desde la versión nueva del repositorio. Sustituye `app\` y los
+lanzadores, reutiliza `venv\` si funciona y conserva `logs\` y `audit.jsonl`. Detén antes el motor (`cauce-stop.cmd`).
 
 ## Desinstalar
 

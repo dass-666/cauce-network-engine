@@ -47,3 +47,69 @@ c.release_route(ruta["id"], owner="mi-app")
 ```
 
 Ejemplo completo: `examples/integracion_externa.py`. Hoy **no** hay ningún sistema externo conectado.
+
+---
+
+# Integración futura con sistemas autorizados (diseño; **no implementado**)
+
+Esta sección describe cómo otros sistemas del ecosistema Cauce podrán usar el motor cuando se autorice.
+En v0.1.0 **no existe ninguna conexión** con otros motores o proyectos, y el motor no conoce a ninguno.
+
+## Principio
+
+El motor es el **único** que decide qué conexión usa cada operación y el único que aplica las políticas.
+Un sistema consumidor solo **consulta** y **pide**; nunca cambia rutas de Windows, adaptadores ni la
+conexión de otra operación. Si el motor no está en marcha, el consumidor funciona igual sin él (usa la
+red normal de Windows, sin enlazar a ninguna IP).
+
+## 1. Consultar interfaces, estado y salud (solo lectura)
+
+| Necesidad | Llamada | Cliente |
+|---|---|---|
+| ¿Está el motor en marcha y es compatible? | `GET /api/v1/ping` (sin token) | `ping()` |
+| Inventario: tipo, IP, gateway, enlace, independencia | `GET /connections` | `connections()` |
+| Salud de cada conexión: estado, latencia, disponibilidad, último error | campo `health` de cada conexión | `connection(id)` |
+| Estado general: modo real/simulado, errores de detección | `GET /diagnostics` | `diagnostics()` |
+| Cambios desde la última consulta (conmutaciones, caídas, límites) | `GET /events?since=N` | `events(since=N)` |
+
+- No hay notificaciones *push* en v1: el consumidor **sondea** `GET /events?since=<último seq>`
+  (recomendado cada 5 s o más; es local y barato).
+- `available` y `usable` ya combinan enlace, salud y exclusiones: el consumidor no debe recalcularlos.
+- `independence` solo vale `confirmed_independent` si se observaron gateway e IP pública distintos; un
+  consumidor que necesite redundancia real debe exigir ese valor, no contar interfaces.
+
+## 2. Solicitar operaciones dentro de las políticas del motor
+
+| Operación | Llamada | Qué controla el motor |
+|---|---|---|
+| Pedir una ruta para tráfico propio | `POST /routes` `{owner, purpose, connection_id?, allow_failover?}` | Solo conexiones sanas; si se pide una concreta y no está sana, `409` (nunca la sustituye en silencio) |
+| Saber por dónde sale ahora | `GET /routes/{id}` antes de cada conexión nueva | La ruta puede haber conmutado por una caída confirmada |
+| Liberar | `DELETE /routes/{id}?owner=` | Solo el propietario |
+| Tarea de laboratorio | `POST /tasks` | Destinos limitados a `lab.allowed_hosts`; 429/503 detienen, 403/451 fallan, sin otra conexión |
+| Rotación | `POST /rotation` y `/activate` | Solo laboratorio; nace pausada; mínimo 10 s, máximo 60 cambios/hora |
+| Parada de emergencia | `POST /stop-all` | Detiene tareas y rotaciones |
+
+Políticas que **ningún consumidor puede desactivar** por la API: no reintentar por otra conexión ante
+429/403/451; no repetir operaciones no idempotentes sin `Idempotency-Key`; no cambiar rutas globales;
+API solo en 127.0.0.1; límites de rotación.
+
+## 3. Cómo debe comportarse un consumidor
+
+1. Leer `api.json` y el token con `CauceClient.from_local_install()`; si fallan, seguir sin el motor.
+2. Pedir una ruta por operación lógica, con un `owner` propio y estable (p. ej. `cauce-monitor:sync`).
+3. Enlazar sus sockets a `bind.source_ip` (o usar `connect_via`, que además verifica la IP usada).
+4. Ante `401`, releer el token (el motor se reinició). Ante `409 connection_unavailable`, esperar o pedir
+   ruta sin `connection_id`. Ante 429/403 de un servicio externo, **detenerse**: no pedir otra ruta.
+5. Liberar la ruta al terminar.
+
+## 4. Lo que falta antes de conectar el primer sistema (recomendación)
+
+| Tema | Hoy (v0.1.0) | Recomendado antes de integrar |
+|---|---|---|
+| Autorización | Un token por arranque con acceso completo | Tokens por sistema con permisos (`leer`, `rutas`, `laboratorio`) y registro del sistema que hizo cada petición |
+| Contrato | Documentado en este archivo y `API.md` | Pruebas de contrato que el consumidor ejecute contra el simulador (`cauce sim`) |
+| Acceso remoto | Solo 127.0.0.1 | Mantenerlo. Una conexión entre motores o equipos exige otro diseño (TLS, autenticación mutua) y una autorización aparte |
+| Hardware | Una salida física probada | Prueba de dos proveedores (`docs/HARDWARE.md`) antes de que un consumidor dependa de la conmutación |
+
+Integrar primero un consumidor **de solo lectura** (consultar estado y salud) es lo de menor riesgo:
+no cambia el tráfico de nadie y valida el contrato.

@@ -1,8 +1,13 @@
 # Limitaciones técnicas y estado de verificación (v0.1.0)
 
-CI: Linux y Windows (Python 3.10 y 3.12) en cada push; ver la pestaña Actions del repositorio.
+**Estado: Candidato estable de laboratorio.** Instalación y detección probadas en un Windows 11 físico
+(según informó el propietario, ver [evidencia/prueba-fisica-msi.md](evidencia/prueba-fisica-msi.md)).
+La conmutación real entre dos proveedores sigue **pendiente**.
 
-Leyenda: **Verificado** = probado con ejecución real reproducible · **Simulado** = probado solo con el
+CI: Linux y Windows (Python 3.10, 3.12 y 3.13) en cada push; ver la pestaña Actions del repositorio.
+
+Leyenda: **Verificado** = probado con ejecución real reproducible · **Informado** = ejecutado en el PC físico
+del propietario y comunicado por él (sin registro reproducible en el repositorio) · **Simulado** = probado solo con el
 simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno objetivo.
 
 ## Estado por componente
@@ -19,12 +24,13 @@ simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno
 | Panel | Verificado en Chromium headless (modo simulación) | `docs/img/panel-sim-failover.png` |
 | Cierre limpio (`cauce stop`) | Verificado en Linux | borra token y `api.json`, registra `engine.stop` |
 | Auditoría encadenada | Verificado | `test_tamper_detected_and_redaction` |
-| Detección Windows (PowerShell) | **Verificado en Windows Server 2025 (CI de GitHub, máquina virtual)** | `cauce doctor` y `cauce discover` se ejecutan sin errores. Esa ejecución encontró un defecto real: la NIC de una VM invitada se clasificaba como virtual y quedaba excluida; ya está corregido. También se vio que Windows puede repetir el mismo ifIndex en dos adaptadores, y ahora se generan ids únicos. La captura real está en `tests/fixtures/windows_github_runner_real.json`. Falta probarlo en un PC físico con Wi‑Fi/4G. |
+| Detección Windows (PowerShell) | **Verificado en CI (Windows Server 2025) + Informado en PC físico** | `cauce doctor` y `cauce discover` se ejecutan sin errores. Esa ejecución encontró un defecto real: la NIC de una VM invitada se clasificaba como virtual y quedaba excluida; ya está corregido. También se vio que Windows puede repetir el mismo ifIndex en dos adaptadores, y ahora se generan ids únicos. La captura real está en `tests/fixtures/windows_github_runner_real.json`. **Informado en PC físico** (MSI, Windows 11 build 26200): 4 interfaces, 1 salida utilizable, Wi‑Fi, Ethernet, Bluetooth PAN y Tailscale bien clasificados. Sin probar aún con datos móviles (4G). |
 | DPAPI para el token | Verificado en Windows (CI) | `test_secret_file_permissions` cifra y descifra con DPAPI en `windows-latest` |
-| Instalador `install.ps1` | Verificado en Windows (CI, consola de administrador) | Crea el entorno aislado y ejecuta `doctor`. Falta probarlo como usuario normal y los `.cmd` con doble clic |
+| Instalador `install.ps1` | Verificado en CI (sin `py`, `py` roto, sin Python, ruta explícita; 3.10/3.12/3.13) + **Informado en PC físico** | `tests/test_windows_installer.py`. En el MSI: usuario normal, Python 3.13.14 sin `py` |
 | Salida de consola con acentos/símbolos | Verificado en Windows (CI) | La CI encontró un fallo con cp1252, que ya está corregido |
-| Selección de interfaz en Windows por IP de origen | **Sin verificar en hardware** | Depende del modelo *strong host* de Windows (ver abajo) |
-| Independencia real de dos ISP | **Sin verificar** | Requiere hardware: `docs/HARDWARE.md` |
+| Acentos en nombres de adaptador («Conexión») | Verificado en Windows (CI, `powershell.exe` real) | El MSI mostró «Conexi¢n» (cp850 leído como cp1252). Corregido con salida Base64/UTF‑8; `PowerShellEncodingTest`. Falta verlo en el MSI tras reinstalar |
+| Selección de interfaz en Windows por IP de origen | **Sin verificar con dos salidas reales** | Depende del modelo *strong host* de Windows (ver abajo) |
+| Independencia real de dos ISP y conmutación física | **Pendiente (expresamente)** | El MSI solo tiene un gateway utilizable. Requiere hardware: `docs/HARDWARE.md` |
 
 ## Limitaciones de diseño conocidas
 

@@ -10,9 +10,10 @@ en Windows 11, con una **API versionada solo en 127.0.0.1** para que otras aplic
 - La rotación es solo para laboratorio propio, con límites duros; **nunca** se usa para sortear límites,
   bloqueos ni restricciones de terceros: una respuesta 429/403 detiene la operación.
 
-> **v0.1.0, estado real:** la lógica está probada (43 pruebas y el escenario de 10 pasos) en Linux y en
-> Windows Server 2025 (CI de GitHub, máquina virtual con una sola red). La detección, el instalador y DPAPI
-> ya se han ejecutado en Windows. **No** se ha probado aún en un PC físico ni con dos proveedores reales.
+> **v0.1.0 — Candidato estable de laboratorio.** Instalación y detección verificadas en Windows 11
+> físico (PC MSI, según informó su propietario: [evidencia](docs/evidencia/prueba-fisica-msi.md)) y en la CI
+> de GitHub (Linux y Windows, Python 3.10/3.12/3.13). La **conmutación real entre dos proveedores está
+> expresamente pendiente**: solo se ha probado con el simulador y con sockets en loopback.
 > Ver [docs/LIMITACIONES.md](docs/LIMITACIONES.md).
 
 ## Inicio rápido
