@@ -11,6 +11,7 @@ Comandos:
   stop         Cierre limpio del motor en marcha.
   labserver    Servidor de laboratorio propio en 127.0.0.1:8770.
   verify-audit Comprueba la integridad del registro de auditoría.
+  token        Credenciales de solo lectura: create | list | revoke (requiere el motor en marcha).
 """
 from __future__ import annotations
 
@@ -146,6 +147,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     p = sub.add_parser("labserver")
     p.add_argument("--port", type=int, default=8770)
+    p = sub.add_parser("token")
+    tsub = p.add_subparsers(dest="tcmd", required=True)
+    tp = tsub.add_parser("create")
+    tp.add_argument("--name", required=True, help="Sistema consumidor, p. ej. monitor")
+    tp.add_argument("--scope", default="read", choices=["read"])
+    tp.add_argument("--out", help="Guardar el token protegido (DPAPI en Windows) en este archivo en vez de mostrarlo")
+    tsub.add_parser("list")
+    tp = tsub.add_parser("revoke")
+    tp.add_argument("token_id")
     p = sub.add_parser("verify-audit")
     p.add_argument("path", nargs="?")
     a = ap.parse_args(argv)
@@ -221,6 +231,28 @@ def main(argv: list[str] | None = None) -> int:
         print("El motor no está en marcha (quedaron datos de una ejecución que no se cerró "
               "correctamente; se reemplazan al volver a arrancarlo).", file=sys.stderr)
         return 3
+    if a.cmd == "token":
+        from .client import CauceAPIError
+        try:
+            if a.tcmd == "create":
+                rec = c.create_token(a.name, a.scope)
+                if a.out:
+                    from .secrets_store import write_secret
+                    write_secret(a.out, rec["token"])
+                    print(f"Credencial {rec['id']} ({rec['name']}, {rec['scope']}) guardada en {a.out}. El token no se muestra.")
+                else:
+                    print(f"Credencial {rec['id']} ({rec['name']}, {rec['scope']}). Cópiala ahora; no se volverá a mostrar:\n{rec['token']}")
+            elif a.tcmd == "list":
+                for t in c.tokens():
+                    estado = "REVOCADA" if t["revoked_at"] else "activa"
+                    print(f"{t['id']}  {t['name']:<20} {t['scope']:<6} {estado:<9} peticiones={t['requests']}")
+            else:
+                t = c.revoke_token(a.token_id)
+                print(f"Credencial {t['id']} ({t['name']}) revocada.")
+        except CauceAPIError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        return 0
     if a.cmd == "status":
         print(json.dumps(c.diagnostics(), indent=2, ensure_ascii=False))
         return 0

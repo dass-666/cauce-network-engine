@@ -13,6 +13,12 @@ Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON
 | Origin | En POST/DELETE, si viene `Origin`, debe ser el propio panel (protección CSRF). Si no, `403`. |
 | Tamaño | Cuerpo máximo 256 KiB. |
 
+### Permisos (desde esta rama)
+
+El token de sesión es `admin`. Además hay credenciales `read` por sistema que **solo** llegan a `/ping`, `/status/connectivity`
+y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
+`GET/POST /tokens`, `DELETE /tokens/{id}`. Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
+
 ## Errores
 
 Todas las respuestas de error tienen la forma:
