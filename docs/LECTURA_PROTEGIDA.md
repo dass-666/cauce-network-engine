@@ -2,8 +2,9 @@
 
 > **Estado: implementado y probado en simulación y CI (Linux y Windows). NO probado con Monitor ni con otros
 > consumidores reales, ni en hardware físico.** Complementa el contrato de la PR #4
-> (`docs/CONTRATO_SOLO_LECTURA.md`, pendiente de revisión): aquí se concreta la sección B4 y se *restringe*
-> la B2 (ver «Diferencias con el contrato propuesto»).
+> (`docs/CONTRATO_SOLO_LECTURA.md`): aquí se concreta la sección B4 y se *restringe*
+> la B2 (ver «Diferencias con el contrato propuesto»). El contrato fue conciliado con esta implementación;
+> si difieren, manda este documento. Orden de fusión recomendado: primero la PR #4 (documentación), luego la PR #5.
 
 ## 1. Qué se añadió
 
@@ -117,6 +118,12 @@ límites, verificaciones o bloqueos de plataformas externas.
 7. Si `tokens.dat` queda ilegible (p. ej. otro usuario de Windows), **ninguna** credencial `read` es válida (falla cerrado).
 8. Cantidad y nombres de conexiones, tipo (`wifi`, `mobile`…) y latencias sí se exponen: son lo mínimo para decidir si hay conectividad.
 9. Probado solo contra el simulador y CI. Falta: Windows 11 físico, un consumidor real y la conmutación con dos proveedores (hardware).
+
+10. **Errores de almacenamiento.** Si `tokens.dat` no se puede escribir: al **crear**, se deshace (503 `storage_error`, no queda credencial fantasma);
+    al **revocar**, la revocación sigue vigente en memoria (falla cerrado) y la API responde 503 `revocation_not_persisted`; repetir la
+    revocación reintenta el guardado. **Si el motor se reinicia antes de que el guardado funcione, la credencial vuelve a ser válida**: tras ese
+    error, no reinicies hasta revocar de nuevo con éxito (o borra `tokens.dat` y recrea las credenciales). Un `tokens.dat` ilegible se aparta como
+    `tokens.dat.unreadable` en vez de sobrescribirse. El registro de accesos (`access.jsonl`) ignora en silencio sus propios errores de escritura (no tumba la API).
 
 ## 7. Compatibilidad con v0.1.0
 

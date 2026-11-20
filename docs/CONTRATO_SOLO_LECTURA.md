@@ -1,9 +1,12 @@
 # Inventario técnico de la API y contrato propuesto de solo lectura
 
-> **Estado: PROPUESTA para revisión. Nada de esto está implementado como integración.**
-> Basado en el código real de `main` (`09ba19a`; motor publicado en v0.1.0, `1551223`).
-> Cada punto indica si **EXISTE** (lo comprobé en el código o ejecutándolo con el simulador) o si es
-> **PROPUESTO** (no existe todavía).
+> **Estado (conciliado con la PR #5): la Parte A describe `main` (`09ba19a`, v0.1.0). La Parte B se
+> implementó en la PR #5 con una diferencia deliberada: el permiso `read` NO llega a `/connections`,
+> `/connections/{id}` ni `/events`, solo a `/status/connectivity` y `/status/events`.**
+> Fuente de verdad del comportamiento implementado: [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
+> Este documento conserva el inventario (A) y el contrato (B) como especificación; donde difieren, manda la PR #5.
+> Etiquetas: **EXISTE** (en `main`/v0.1.0), **IMPLEMENTADO EN PR #5** (verificado por pruebas en esa rama, aún sin
+> fusionar) y **PROPUESTO** (no existe).
 
 ---
 
@@ -48,13 +51,14 @@ Todos van bajo `/api/v1` y exigen `Authorization: Bearer <token>`, salvo `/ping`
 - Hay comprobación de `Host` (421 `bad_host`) contra *DNS rebinding*, y de `Origin` en métodos distintos de GET
   (403 `bad_origin`) contra CSRF.
 
-**Brecha: no existen permisos de solo lectura.** El token da acceso completo, incluidos `/shutdown`,
+**Brecha en `main`/v0.1.0 (cerrada en la PR #5 una vez fusionada): no existen permisos de solo lectura.** El token da acceso completo, incluidos `/shutdown`,
 `/stop-all`, `/selection` y la rotación. Además, DPAPI de usuario permite descifrarlo a **cualquier proceso del
 mismo usuario de Windows**. Por tanto:
 
 - **No se debe entregar este token a otro motor.** Hacerlo le daría control de administración.
-- Hasta que existan tokens con permisos, una integración de lectura **no es segura** salvo como prueba de
-  laboratorio con el simulador.
+- Hasta que existan tokens con permisos (PR #5), una integración de lectura **no es segura** salvo como prueba de
+  laboratorio con el simulador. Con la PR #5, el consumidor recibe un token `read` y nunca el de administración,
+  pero **eso no aísla procesos del mismo usuario de Windows** (ver A9 y LECTURA_PROTEGIDA.md §6).
 
 ### A4. Estado y salud de una conexión (EXISTE)
 
@@ -94,7 +98,8 @@ Este es un ejemplo de `GET /connections/{id}` en modo simulación, con datos fic
 Tipos relevantes para un consumidor de lectura: `health.change`, `health.recovered`, `inventory.added`,
 `inventory.changed`, `inventory.removed`, `engine.start` y `engine.stop`.
 
-Hay dos comportamientos que un consumidor debe conocer (comprobados en `audit.py`):
+Hay dos comportamientos del `/events` **administrativo** que un consumidor debe conocer (comprobados en `audit.py`;
+`/status/events` de la PR #5 los corrige: devuelve los primeros eventos en orden y calcula `gap`, `restarted` y `next_since`):
 
 1. **Si hay más eventos que `limit`, se devuelven los más recientes**, no los más antiguos. Si el primer
    `seq` recibido es mayor que `since + 1`, **se han perdido eventos**. En ese caso hay que volver a leer
@@ -150,46 +155,58 @@ Un consumidor autorizado puede **consultar conectividad, disponibilidad y salud*
 - ver las rutas de otros sistemas,
 - ni cambiar nada.
 
-### B2. Endpoints utilizables
+### B2. Endpoints utilizables por un token `read` (conciliado con la PR #5)
 
 | Endpoint | Estado | Uso |
 |---|---|---|
-| `GET /api/v1/ping` | EXISTE | Comprobar que el motor está en marcha y la versión |
-| `GET /api/v1/connections` (sin `refresh`) | EXISTE | Estado completo |
-| `GET /api/v1/connections/{id}` | EXISTE | Una conexión |
-| `GET /api/v1/events?since=N&kind=health.` | EXISTE | Cambios de salud |
-| `GET /api/v1/events?since=N&kind=inventory.` | EXISTE | Altas, bajas y cambios de interfaz |
-| `GET /api/v1/status/connectivity` | **PROPUESTO** | Vista reducida, sin MAC, IP pública ni IPs locales (ver B3) |
+| `GET /api/v1/ping` | EXISTE | Comprobar que el motor está en marcha y la versión (público, sin token) |
+| `GET /api/v1/status/connectivity` | **IMPLEMENTADO EN PR #5** | Vista reducida (esquema `cauce.connectivity/1`), sin MAC, IP pública, IPs locales ni gateway |
+| `GET /api/v1/status/events?since=N&limit=L` | **IMPLEMENTADO EN PR #5** | Cambios de salud e inventario, reducidos, con `gap`, `restarted`, `resync_required` y `next_since` |
 
-### B3. Vista reducida propuesta (PROPUESTO, datos ficticios)
+**Cambio respecto al borrador original de esta sección:** el borrador permitía a `read` usar `/connections`,
+`/connections/{id}` y `/events`. Se **retiró**: esos endpoints devuelven `mac`, `public_ip`, `ipv4`, `primary_ip` y
+`gateway` (y `/events` contiene IPs locales y gateways), y el propio contrato ya recomendaba descartarlos.
+Un token `read` recibe `403 insufficient_scope` en ellos, y en `/diagnostics`, `/routes`, `/tasks` y `/rotation`.
+Los endpoints administrativos no cambian para el token de sesión (`admin`).
+
+### B3. Vista reducida (IMPLEMENTADA EN PR #5; el borrador inicial era distinto)
+
+La forma real, el significado de `state`/`usable` (incluido `unknown` con `usable: null`) y los campos excluidos están en
+[LECTURA_PROTEGIDA.md §3](LECTURA_PROTEGIDA.md). Resumen con datos ficticios:
 
 ```json
 {
-  "api": "v1", "engine_version": "0.1.x", "mode": "real",
-  "generated_at": "2026-11-20T13:00:00Z",
-  "any_available": true,
-  "independent_exits": 1,
+  "schema": "cauce.connectivity/1", "api": "v1",
+  "engine": {"version": "0.1.0", "mode": "real", "epoch": "9f3a1c02"},
+  "generated_at": "2026-11-20T13:00:00Z", "last_seq": 412,
+  "state": "usable", "usable": true, "reason": null,
+  "counts": {"connections": 1, "available": 1, "measured": 1},
   "connections": [
-    {"id": "win-14", "kind": "wifi", "link": "up", "available": true,
-     "independence": "likely_independent",
-     "health": {"state": "healthy", "availability_pct": 99.2, "avg_latency_ms": 23.5}}
+    {"id": "win-14", "kind": "wifi", "link": "up", "available": true, "measured": true,
+     "health": "healthy", "availability_pct": 99.2, "avg_latency_ms": 23.5}
   ]
 }
 ```
 
-Mientras esta vista no exista, el consumidor debe **descartar** `mac`, `public_ip`, `ipv4`, `primary_ip`
-y `gateway` en cuanto reciba la respuesta, y no guardarlos.
+Cambios frente al borrador original: se añaden `schema`, `epoch`, `last_seq`, `usable` (tri-estado), `reason`, `counts`
+y `measured`; se elimina `independent_exits` y `independence` (revelan agrupación de salidas y no son necesarios para
+decidir si hay conectividad). El consumidor debe seguir ignorando los campos que no conozca (B7).
 
 ### B4. Autenticación y permisos (PROPUESTO)
 
-1. **Tokens por sistema con permiso `read`**, creados por el operador (por ejemplo, `cauce token create
-   --name monitor --scope read`) y guardados con DPAPI.
-2. En el servidor, el permiso `read` solo da acceso a los endpoints de B2. Cualquier otro devuelve
-   `403 insufficient_scope` (código **PROPUESTO**).
-3. Cada petición queda registrada con el nombre del sistema, no con el token.
-4. Los tokens se pueden revocar sin reiniciar el motor. **Nunca** se entrega el token de administración.
+Todo lo siguiente está **IMPLEMENTADO EN PR #5** (aún sin fusionar):
 
-**Hasta que esto exista, la integración no debe pasar del laboratorio.**
+1. **Tokens por sistema con permiso `read`**, creados por el operador (`cauce token create --name monitor --out monitor.token`);
+   solo se guarda su hash SHA-256 (`tokens.dat`, con DPAPI en Windows). El permiso `admin` no se puede crear.
+2. En el servidor, el permiso `read` solo da acceso a los endpoints de B2. Cualquier otro devuelve `403 insufficient_scope`;
+   el valor por defecto de una ruta nueva es `admin`.
+3. Cada petición queda en `access.jsonl` con el nombre del sistema y el id de la credencial, nunca el token, el cuerpo ni los valores de la consulta.
+4. Revocación inmediata sin reiniciar el motor (`401 token_revoked`) y persistente tras reinicios. **Nunca** se entrega el token de administración.
+5. Si el almacenamiento falla al revocar, la revocación queda vigente en memoria y la API responde `503 revocation_not_persisted`
+   (LECTURA_PROTEGIDA.md §6, punto 10).
+
+**Siguen sin existir** (PROPUESTOS): límite de peticiones por token (B5/Parte C) y aislamiento real frente a procesos del mismo usuario de Windows.
+**Mientras la PR #5 no se fusione, la integración no debe pasar del laboratorio.**
 
 ### B5. Tiempos y frecuencia recomendados
 
@@ -213,7 +230,7 @@ y `gateway` en cuanto reciba la respuesta, y no guardarlos.
 - Los campos nuevos se añaden sin romper nada, así que el consumidor debe **ignorar los campos que no conozca**.
 - Un cambio incompatible iría en `/api/v2`, manteniendo `v1` durante al menos una versión menor.
 
-### B8. Identificadores de correlación (PROPUESTO)
+### B8. Identificadores de correlación (PROPUESTO, no incluido en la PR #5)
 
 - Cabecera opcional `X-Cauce-Correlation-Id`: un UUID v4 o un hash generado por el consumidor, **sin** nombres,
   expedientes, correos ni datos de formularios.
@@ -221,7 +238,8 @@ y `gateway` en cuanto reciba la respuesta, y no guardarlos.
 
 ### B9. Pruebas para validar un consumidor
 
-Todas se hacen contra `cauce sim`, sin red real:
+Todas se hacen contra `cauce sim`, sin red real. Para un consumidor, usar `/status/connectivity` y `/status/events`
+(no `/connections` ni `/events`, que un token `read` no puede leer). La parte del motor ya la cubre `tests/test_read_tokens.py`:
 
 1. Con el motor parado, el consumidor informa «desconocido» y sigue funcionando.
 2. Con un token inválido, recibe 401, relee una vez y se detiene sin bucle.
@@ -238,7 +256,7 @@ Todas se hacen contra `cauce sim`, sin red real:
 
 | Riesgo | Gravedad | Mitigación |
 |---|---|---|
-| Entregar el token actual a otro motor le da control total | **Alta** | No hacerlo. Implementar B4 antes |
+| Entregar el token actual a otro motor le da control total | **Alta** | No hacerlo. Usar tokens `read` (PR #5, pendiente de fusión) |
 | **Cauce Monitor tiene su propio gestor de conexiones que elige IP de origen.** Lo encontró la auditoría de otro hilo; **no lo he verificado yo** | **Alta** | Network Engine no ve ese tráfico: sus leases y la conmutación no lo coordinan. Hay que decidir un único dueño de la selección de salida antes de cualquier fase de operaciones. En la fase de lectura, Monitor solo consulta |
 | El consumidor confunde «motor caído» con «sin red» | Media | Política B6 |
 | Eventos perdidos al pasar el límite | Media | Detectar huecos en `seq` (A5) |
