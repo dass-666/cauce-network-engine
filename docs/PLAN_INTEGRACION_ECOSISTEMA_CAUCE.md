@@ -140,3 +140,4 @@ Cada paso se activa con una opción de configuración, desactivada por defecto, 
 | Funciones, API y datos de Cauce Monitor Engine | PENDIENTE (revisión de su repositorio) |
 | Funciones, API y datos de Cauce Universal Form Connector | PENDIENTE (revisión de su repositorio) |
 | Tokens por sistema con permisos | PENDIENTE (decisión y desarrollo futuro) |
+| Monitor tiene su propio gestor de conexiones que elige IP de origen (hallazgo de otra auditoría, no verificado aquí) | PENDIENTE: decidir un único dueño de la selección de salida antes de la fase de operaciones. Ver `CONTRATO_SOLO_LECTURA.md`, parte C |

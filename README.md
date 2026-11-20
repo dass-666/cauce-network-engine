@@ -14,7 +14,7 @@ en Windows 11, con una **API versionada solo en 127.0.0.1** para que otras aplic
 > físico (PC MSI, según informó su propietario: [evidencia](docs/evidencia/prueba-fisica-msi.md)) y en la CI
 > de GitHub (Linux y Windows, Python 3.10/3.12/3.13). La **conmutación real entre dos proveedores está
 > expresamente pendiente**: solo se ha probado con el simulador y con sockets en loopback.
-> Ver [docs/LIMITACIONES.md](docs/LIMITACIONES.md). Plan de integración futura (propuesta): [docs/PLAN_INTEGRACION_ECOSISTEMA_CAUCE.md](docs/PLAN_INTEGRACION_ECOSISTEMA_CAUCE.md).
+> Ver [docs/LIMITACIONES.md](docs/LIMITACIONES.md). Plan de integración futura (propuesta): [docs/PLAN_INTEGRACION_ECOSISTEMA_CAUCE.md](docs/PLAN_INTEGRACION_ECOSISTEMA_CAUCE.md). Inventario de la API y contrato de solo lectura (propuesta): [docs/CONTRATO_SOLO_LECTURA.md](docs/CONTRATO_SOLO_LECTURA.md).
 
 ## Inicio rápido
 
