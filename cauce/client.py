@@ -162,13 +162,26 @@ class CauceReadClient:
     No tiene métodos de administración, rutas, tareas ni ``refresh``: aunque los tuviera, el servidor
     respondería 403. Solo llama a /ping, /status/connectivity y /status/events.
 
-    Regla de fallo seguro: si el motor no responde, ``connectivity_or_unknown`` devuelve
-    ``state="engine_unreachable"`` con ``usable=None`` («sin información»). Eso NO significa
-    que el equipo no tenga internet; solo que Network Engine no contestó.
+    Regla de fallo seguro de ``connectivity_or_unknown``:
+    - Motor sin respuesta (apagado, tiempo agotado, JSON ilegible) o error 5xx (p. ej. 503 ``credentials_locked``):
+      devuelve ``state="engine_unreachable"`` con ``usable=None`` («sin información»; ``reason`` = código del
+      error o ``engine_unreachable``). Eso NO significa que el equipo no tenga internet.
+    - 401 (token inválido o revocado), 403 (permiso insuficiente) y 400 (petición mal formada): son errores de
+      autenticación/configuración, NO de conectividad. Se propagan como ``CauceAPIError`` y el cliente queda
+      DETENIDO (``halted``): las llamadas siguientes de ``connectivity_or_unknown`` repiten el error SIN enviar
+      peticiones, hasta que el operador cambie la credencial y llame a ``reset()``.
+    - Motor funcionando: devuelve el estado real (``usable``, ``degraded``, ``unavailable``, ``unknown``) sin tocarlo.
     """
+
+    HALT_STATUSES = (400, 401, 403)
 
     def __init__(self, token: str, host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0):
         self._c = CauceClient(token, host, port, timeout)
+        self.halted: Optional[CauceAPIError] = None
+
+    def reset(self) -> None:
+        """Reanuda las consultas tras un ``halted`` (el operador ya corrigió la credencial o el permiso)."""
+        self.halted = None
 
     @classmethod
     def from_token_file(cls, token_path: str, port: int = 8765, **kw) -> "CauceReadClient":
@@ -186,8 +199,21 @@ class CauceReadClient:
         return self._c._call("GET", f"/status/events?since={int(since)}&limit={int(limit)}")
 
     def connectivity_or_unknown(self) -> dict:
+        if self.halted is not None:
+            raise self.halted                       # sin tocar la red: reintentar una credencial rota no la arregla
         try:
             return self.connectivity()
-        except (OSError, ValueError):   # motor ausente, rechazo de conexión, tiempo agotado, JSON ilegible
-            return {"schema": "cauce.connectivity/1", "state": "engine_unreachable", "usable": None,
-                    "reason": "engine_unreachable", "connections": []}
+        except CauceAPIError as e:
+            if e.status in self.HALT_STATUSES:
+                self.halted = e
+                raise                                # autenticación/configuración: nunca se disfraza de «sin información»
+            if e.status >= 500:                      # 5xx (p. ej. 503 credentials_locked): sin información, no «sin internet»
+                return self._unknown(e.code)
+            raise                                    # otro 4xx inesperado: se ve, pero sin detener (no es de credencial)
+        except (OSError, ValueError):               # motor ausente, rechazo de conexión, tiempo agotado, JSON ilegible
+            return self._unknown("engine_unreachable")
+
+    @staticmethod
+    def _unknown(reason: str) -> dict:
+        return {"schema": "cauce.connectivity/1", "state": "engine_unreachable", "usable": None,
+                "reason": reason, "connections": []}

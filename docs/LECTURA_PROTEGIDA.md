@@ -69,6 +69,11 @@ cauce token recover                                  # solo si el almacén qued�
 Este documento solo existe si Network Engine contesta. Si no contesta (parado, bloqueado, tiempo agotado, 5xx), el consumidor
 debe considerar el estado **«sin información»**. `CauceReadClient.connectivity_or_unknown()` devuelve
 `state: "engine_unreachable"`, `usable: null`. **Nunca** `unavailable` ni `usable: false`. Hay una prueba que lo verifica.
+
+Los errores de **credencial o configuración no son «sin información»**: `401` (token inválido o revocado), `403` (permiso insuficiente) y `400`
+se propagan como `CauceAPIError` y el cliente queda **detenido** (`halted`): las llamadas siguientes repiten el error sin enviar peticiones hasta que
+el operador corrija la credencial y llame a `reset()`. Un `5xx` (p. ej. `503 credentials_locked`) y el motor apagado sí devuelven `engine_unreachable`
+con `usable: null` (`reason` = código del error). Si el motor responde, el estado real (`unavailable` incluido) se conserva. Pruebas: `tests/test_client_errors.py`.
 Otro consumidor tampoco debe usar este endpoint para concluir que un servicio externo está caído.
 
 ## 4. `GET /api/v1/status/events?since=N&limit=L`
