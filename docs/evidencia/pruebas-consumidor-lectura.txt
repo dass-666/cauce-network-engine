@@ -1,0 +1,32 @@
+test_engine_off_is_no_info_with_backoff_then_recovers (test_consumer_validation.ConsumerHappyAndErrorsTest.test_engine_off_is_no_info_with_backoff_then_recovers) ... motor no responde (URLError)
+motor no responde (URLError)
+motor no responde (URLError)
+motor no responde (URLError)
+motor reiniciado; estado releído
+ok
+test_engine_restart_detected_by_epoch_even_when_seq_is_higher (test_consumer_validation.ConsumerHappyAndErrorsTest.test_engine_restart_detected_by_epoch_even_when_seq_is_higher) ... motor reiniciado; estado releído
+ok
+test_event_loss_triggers_resync_not_silence (test_consumer_validation.ConsumerHappyAndErrorsTest.test_event_loss_triggers_resync_not_silence) ... eventos perdidos o motor reiniciado; se usa el estado releído
+ok
+test_forbidden_scope_halts (test_consumer_validation.ConsumerHappyAndErrorsTest.test_forbidden_scope_halts)
+Si alguien cambiara la ruta a admin, el consumidor se detiene en vez de insistir. ... credencial/petición rechazada (insufficient_scope): integración detenida hasta intervención del operador
+ok
+test_garbage_credential_halts_as_unauthorized (test_consumer_validation.ConsumerHappyAndErrorsTest.test_garbage_credential_halts_as_unauthorized) ... credencial/petición rechazada (unauthorized): integración detenida hasta intervención del operador
+ok
+test_locked_store_503_is_no_info_not_no_internet_and_not_halted (test_consumer_validation.ConsumerHappyAndErrorsTest.test_locked_store_503_is_no_info_not_no_internet_and_not_halted) ... motor respondió error transitorio (credentials_locked)
+credencial/petición rechazada (token_revoked): integración detenida hasta intervención del operador
+ok
+test_polling_interval_has_a_floor (test_consumer_validation.ConsumerHappyAndErrorsTest.test_polling_interval_has_a_floor) ... ok
+test_revoked_credential_halts_and_stops_hitting_the_engine (test_consumer_validation.ConsumerHappyAndErrorsTest.test_revoked_credential_halts_and_stops_hitting_the_engine) ... credencial/petición rechazada (token_revoked): integración detenida hasta intervención del operador
+ok
+test_unknown_is_null_and_does_not_become_false (test_consumer_validation.ConsumerHappyAndErrorsTest.test_unknown_is_null_and_does_not_become_false) ... ok
+test_uses_only_read_credential_and_only_status_paths (test_consumer_validation.ConsumerHappyAndErrorsTest.test_uses_only_read_credential_and_only_status_paths) ... ok
+test_logs_never_contain_ip_mac_or_tokens_across_all_scenarios (test_consumer_validation.ConsumerLogsTest.test_logs_never_contain_ip_mac_or_tokens_across_all_scenarios) ... ok
+test_result_dict_has_no_machine_data (test_consumer_validation.ConsumerLogsTest.test_result_dict_has_no_machine_data) ... ok
+test_env_and_file_switch_make_zero_requests_and_never_raise (test_consumer_validation.KillSwitchTest.test_env_and_file_switch_make_zero_requests_and_never_raise) ... ok
+test_each_forbidden_action_is_denied_and_has_no_effect (test_consumer_validation.ReadConsumerCannotDoAdminTest.test_each_forbidden_action_is_denied_and_has_no_effect) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 8.396s
+
+OK
