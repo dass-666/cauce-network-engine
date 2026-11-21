@@ -8,7 +8,7 @@ Base: `main` @ 201708c (PR #4 y #5). v0.1.0 intacta; no se tocó la MSI, ni cone
 
 - Pruebas nuevas: `tests/test_consumer_validation.py` — **14 pruebas, todas OK** (salida en `pruebas-consumidor-lectura.txt`).
 - Suite completa tras el cambio: **109 pruebas OK (5 omitidas, las mismas de antes)**, Python 3.13.18, Linux. Dos ejecuciones consecutivas de las nuevas: sin intermitencias.
-- **No ejecutado:** CI de GitHub (Windows/Python 3.10–3.13) hasta abrir la PR; Windows físico.
+- **CI de GitHub (Linux y Windows, Python 3.10, 3.12 y 3.13): 12/12 verde** sobre este PR. **No ejecutado:** Windows físico.
 - Se reutilizó la base de PR #5 (`test_read_tokens.py`: lista blanca de campos, 401, revocación, huecos, recorrido exhaustivo de rutas). Aquí solo lo que faltaba: comportamiento de un consumidor *real* de extremo a extremo.
 
 ## Fase 1 — qué se comprobó y dónde
@@ -40,14 +40,14 @@ Más el recorrido de **todas** las rutas registradas (PR #5): el conjunto accesi
 
 | # | Gravedad | Hallazgo | Estado |
 |---|---|---|---|
-| 1 | Baja (documentación/cliente) | `CauceReadClient.connectivity_or_unknown()` solo convierte errores de red en `engine_unreachable`; un `503 credentials_locked` o un `401` lanzan `CauceAPIError`. `LECTURA_PROTEGIDA.md` §3 dice que los 5xx deben tratarse como «sin información». Un consumidor que solo use ese método lo verá como excepción. | **No corregido** (fuera de alcance «solo validar»). El consumidor de referencia lo cubre y está probado. Recomendación: ampliar el método en una PR aparte con una prueba. |
+| 1 | Baja (documentación/cliente) | `CauceReadClient.connectivity_or_unknown()` solo convertía errores de red en `engine_unreachable`; un `503 credentials_locked` o un `401` lanzaban `CauceAPIError`, contra lo que dice `LECTURA_PROTEGIDA.md` §3. | **Corregido en el PR #7** (fusionado antes que este PR): 5xx y motor apagado → `usable: null`; 401/403/400 se propagan y detienen el cliente hasta un `reset()` explícito. El consumidor de ejemplo y el cliente quedan compatibles (`tests/test_client_errors.py`). |
 | 2 | Informativa | DPAPI no aísla procesos del mismo usuario de Windows: un proceso con tu usuario puede leer el token `read` **y** `api.token`. El token read protege contra errores/fugas del consumidor, no contra malware del mismo usuario. | Documentado (guía §10). Sin mitigación implementada. |
 | 3 | Informativa | Sin límite de peticiones por credencial: un consumidor defectuoso puede saturar la API local. | Documentado; el consumidor de referencia impone mínimo 5 s. |
 
 ## Qué sigue sin verificar
 
 Windows 11 físico con un consumidor real; Cauce Monitor real (su repositorio no se inspeccionó); dos proveedores de internet; comportamiento
-bajo carga; CI de esta rama (pendiente al abrir la PR).
+bajo carga. (El CI de GitHub sí pasó: 12/12.)
 
 ## Cómo reproducir
 

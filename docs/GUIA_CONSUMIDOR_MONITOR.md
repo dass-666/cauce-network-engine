@@ -93,8 +93,10 @@ Para **solo conocer el estado actual basta `/status/connectivity`** (es lo más 
 | `403 insufficient_scope` | Se llamó una ruta no permitida (bug del consumidor) | Dejar de consultar y corregir el código. |
 | `400 unsupported_parameter` | Se añadió un parámetro (p. ej. `refresh=1`) | Quitarlo: la vista no admite ninguno. |
 
-Nota técnica (hallazgo): `CauceReadClient.connectivity_or_unknown()` solo convierte en «sin información» los errores de red; un `503` o `401`
-llega como `CauceAPIError`. El ejemplo de esta guía (`StatusConsumer.poll`) ya los trata todos. No se modificó el cliente (fuera de alcance).
+Nota técnica: `CauceReadClient.connectivity_or_unknown()` quedó corregido en el PR #7. Ahora convierte en «sin información» (`state: engine_unreachable`, `usable: null`)
+el motor apagado y los errores 5xx (p. ej. `503 credentials_locked`); **401, 403 y 400 se propagan como `CauceAPIError`** y dejan el cliente detenido (`halted`):
+las llamadas siguientes repiten el error sin enviar peticiones hasta que el operador corrija la credencial y llame **explícitamente** a `reset()`
+(nunca desde un bucle de reintentos). El ejemplo `StatusConsumer.poll` aplica la misma clasificación (pruebas de compatibilidad en `tests/test_client_errors.py`).
 
 ## 7. Reinicios del motor y pérdida de eventos
 
