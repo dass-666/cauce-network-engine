@@ -20,6 +20,8 @@ jobs:
         run: python -m unittest -v
       - name: Escenario de 10 pasos (simulador)
         run: python -m cauce scenario --out reports
+      - name: Escenario de dos sesiones de navegador (simulador, sin navegador real)
+        run: python -m cauce scenario-sessions --out reports
       - name: Detección real de interfaces (Windows, solo lectura)
         if: runner.os == 'Windows'
         run: |

@@ -33,7 +33,8 @@ from .secrets_store import read_secret, write_secret
 
 SCOPE_READ = "read"
 SCOPE_ADMIN = "admin"
-CREATABLE_SCOPES = (SCOPE_READ,)  # un token admin nunca se crea por la API
+SCOPE_SESSION = "session"   # solo rutas /sessions: registrar UNA sesión de navegador y enviarle latidos
+CREATABLE_SCOPES = (SCOPE_READ, SCOPE_SESSION)  # un token admin nunca se crea por la API
 MAX_TOKENS = 20
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _TOKEN_RE = re.compile(r"^cr1\.([0-9a-f]{8})\.([A-Za-z0-9_-]{20,128})$")

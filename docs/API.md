@@ -19,6 +19,10 @@ El token de sesión es `admin`. Además hay credenciales `read` por sistema que 
 y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
 `GET/POST /tokens`, `POST /tokens/recover`, `DELETE /tokens/{id}` (`503 revocation_not_persisted` si la revocación no pudo guardarse; las `read` quedan en `503 credentials_locked` hasta recuperar). Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
 
+Sesiones de navegador (rama `feat/sesiones-navegador`): `read` también llega a `GET /status/sessions`. Nueva credencial `session`
+(una por sesión) que solo llega a `POST /sessions`, `POST /sessions/{id}/heartbeat`, `GET` y `DELETE /sessions/{id}` de su propia
+sesión. Contrato completo en [SESIONES_NAVEGADOR.md](SESIONES_NAVEGADOR.md).
+
 ## Errores
 
 Todas las respuestas de error tienen la forma:

@@ -30,10 +30,14 @@ from . import API_VERSION, __version__
 from .engine import Engine, EngineError
 from .policy import PolicyError
 from .routing import RouteError
-from .status import MAX_EVENTS, connectivity_view, events_view
-from .tokens import SCOPE_ADMIN, SCOPE_READ, AccessLog, Principal, TokenError, TokenStore
+from .sessions import SessionError
+from .status import MAX_EVENTS, connectivity_view, events_view, sessions_view
+from .tokens import SCOPE_ADMIN, SCOPE_READ, SCOPE_SESSION, AccessLog, Principal, TokenError, TokenStore
 
-_RANK = {SCOPE_READ: 1, SCOPE_ADMIN: 2}
+
+def _allowed(have: str, need: str) -> bool:
+    """admin llega a todo; read y session solo a las rutas de su mismo permiso (no son jerárquicos)."""
+    return have == SCOPE_ADMIN or have == need
 
 MAX_BODY = 256 * 1024
 WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
@@ -114,6 +118,45 @@ class CauceAPI:
             if since < 0 or limit < 1:
                 raise ApiError(400, "invalid_request", "since >= 0 y limit >= 1")
             return events_view(e, since, min(limit, MAX_EVENTS))
+
+        @r("GET", P + "/status/sessions", SCOPE_READ)
+        def status_sessions(req, m, q, body):
+            self._only_params(q, ())
+            return sessions_view(e, time.time())
+
+        # --- sesiones de navegador (solo estado; ver cauce/sessions.py) ---
+        def _session_principal(req, owner_only: bool = True) -> Principal:
+            p = req._cauce_principal
+            if owner_only and p.scope != SCOPE_SESSION:
+                raise ApiError(403, "session_credential_required",
+                               "Solo una credencial 'session' puede registrar o enviar latidos a una sesión")
+            return p
+
+        @r("POST", P + "/sessions", SCOPE_SESSION)
+        def sess_register(req, m, q, body):
+            p = _session_principal(req)
+            s = e.sessions.register(p.token_id, p.name, body)
+            return e.sessions.view(s), 201
+
+        @r("GET", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})", SCOPE_SESSION)
+        def sess_get(req, m, q, body):
+            p = _session_principal(req, owner_only=False)
+            e.sessions.evaluate()
+            s = e.sessions.get(m["sid"], p.token_id, admin=p.scope == SCOPE_ADMIN)
+            return e.sessions.view(s)
+
+        @r("POST", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})/heartbeat", SCOPE_SESSION)
+        def sess_heartbeat(req, m, q, body):
+            p = _session_principal(req)
+            s = e.sessions.heartbeat(m["sid"], p.token_id, body)
+            return e.sessions.view(s)
+
+        @r("DELETE", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})", SCOPE_SESSION)
+        def sess_close(req, m, q, body):
+            p = _session_principal(req, owner_only=False)
+            admin = p.scope == SCOPE_ADMIN
+            return e.sessions.close(m["sid"], p.token_id, admin=admin,
+                                    reason="cerrada por el operador" if admin else "cerrada por su dueño")
 
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):
@@ -359,7 +402,7 @@ class CauceAPI:
                 # Autorización en el servidor, ANTES de leer el cuerpo o ejecutar nada.
                 for m_, pat, _fn, need in self.routes:
                     if m_ == method and pat.match(url.path):
-                        if _RANK[principal.scope] < _RANK[need]:
+                        if not _allowed(principal.scope, need):
                             raise ApiError(403, "insufficient_scope",
                                            f"Esta credencial ({principal.scope}) no tiene permiso {need} para {method} {url.path}")
                         break
@@ -392,6 +435,8 @@ class CauceAPI:
         except ApiError as e:
             self._error(h, e.status, e.code, e.message)
         except TokenError as e:
+            self._error(h, e.status, e.code, e.message)
+        except SessionError as e:
             self._error(h, e.status, e.code, e.message)
         except EngineError as e:
             self._error(h, e.status, e.code, e.message)

@@ -4,6 +4,7 @@ Comandos:
   run          Arranca el motor real + API + panel (127.0.0.1).
   sim          Arranca el motor con el SIMULADOR de 3 conexiones + API + panel.
   scenario     Ejecuta el escenario de 10 pasos y genera un informe.
+  scenario-sessions  Simulación de estabilidad y aislamiento de dos sesiones de navegador (sin navegador real).
   discover     Muestra las interfaces detectadas (--raw guarda la salida cruda).
   doctor       Diagnóstico de dependencias, permisos y entorno.
   panel        Abre el panel en el navegador (con el token de sesión).
@@ -11,7 +12,7 @@ Comandos:
   stop         Cierre limpio del motor en marcha.
   labserver    Servidor de laboratorio propio en 127.0.0.1:8770.
   verify-audit Comprueba la integridad del registro de auditoría.
-  token        Credenciales de solo lectura: create | list | revoke | recover (requiere el motor en marcha).
+  token        Credenciales read (Monitor) o session (una sesión de navegador): create | list | revoke | recover (requiere el motor en marcha).
 """
 from __future__ import annotations
 
@@ -139,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--port", type=int)
     p = sub.add_parser("scenario")
     p.add_argument("--out", default="reports")
+    p = sub.add_parser("scenario-sessions")
+    p.add_argument("--out", default="reports")
     p = sub.add_parser("discover")
     p.add_argument("--raw", help="Guardar salida cruda de PowerShell en este archivo (Windows)")
     sub.add_parser("doctor")
@@ -151,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
     tp.add_argument("--name", required=True, help="Sistema consumidor, p. ej. monitor")
-    tp.add_argument("--scope", default="read", choices=["read"])
+    tp.add_argument("--scope", default="read", choices=["read", "session"],
+                    help="read: Monitor (solo /status/*). session: una sesión de navegador (solo /sessions)")
     tp.add_argument("--out", help="Guardar el token protegido (DPAPI en Windows) en este archivo en vez de mostrarlo")
     tsub.add_parser("list")
     tsub.add_parser("recover")
@@ -181,6 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         from .scenario import run
         r = run(a.out)
         print(f"\nInforme: {os.path.abspath(a.out)}/scenario-report.md")
+        return 0 if r["ok"] else 1
+    if a.cmd == "scenario-sessions":
+        from .session_scenario import run as run_sessions
+        r = run_sessions(a.out)
+        print(f"\nInforme: {os.path.abspath(a.out)}/sessions-scenario-report.md")
         return 0 if r["ok"] else 1
     if a.cmd == "discover":
         from .discovery import default_provider

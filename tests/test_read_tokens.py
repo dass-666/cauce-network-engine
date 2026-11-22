@@ -383,7 +383,9 @@ if __name__ == "__main__":
 class RevisionPr45Test(Base):
     """Cierre de la revisión de las PR #4 y #5: cobertura exhaustiva, almacenamiento y secretos."""
 
-    READ_ROUTES = {("GET", "/api/v1/status/connectivity"), ("GET", "/api/v1/status/events")}
+    # Ampliado a propósito con /status/sessions (seguimiento de sesiones de navegador, ver test_sessions.py)
+    READ_ROUTES = {("GET", "/api/v1/status/connectivity"), ("GET", "/api/v1/status/events"),
+                   ("GET", "/api/v1/status/sessions")}
 
     def test_every_registered_route_is_denied_to_read_unless_whitelisted(self):
         """Recorre las rutas REALES del servidor (no una lista a mano): una ruta nueva sin declarar queda como admin."""
@@ -393,7 +395,7 @@ class RevisionPr45Test(Base):
             raw = pat.pattern[1:-1]
             def fill(m):
                 body = m.group(1)
-                return next(c for c in ("sim-a", "00000000", "ls_abc", "tk_abc", "activate", "r", "1")
+                return next(c for c in ("sim-a", "00000000", "ls_abc", "tk_abc", "bs_0123456789ab", "activate", "r", "1")
                             if re.fullmatch(body, c))
             path = re.sub(r"\(\?P<\w+>((?:[^()]|\([^()]*\))*)\)", fill, raw)
             if not pat.match(path):

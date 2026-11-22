@@ -19,6 +19,7 @@ from .models import Health
 
 SCHEMA_CONNECTIVITY = "cauce.connectivity/1"
 SCHEMA_EVENTS = "cauce.status-events/1"
+SCHEMA_SESSIONS = "cauce.sessions/1"
 
 # Tipos de evento visibles para un consumidor y los únicos campos de ``data`` que se copian.
 _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -27,6 +28,9 @@ _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     "inventory.added": ("connection_id",),
     "inventory.changed": ("connection_id",),
     "inventory.removed": ("connection_id",),
+    "session.registered": ("session_id", "label"),
+    "session.state": ("session_id", "old", "new", "reason"),
+    "session.closed": ("session_id", "label"),
     "engine.start": (),
     "engine.stop": (),
 }
@@ -131,4 +135,28 @@ def events_view(engine: Engine, since: int, limit: int) -> dict[str, Any]:
         "has_more": more,
         "next_since": next_since,
         "events": out,
+    }
+
+
+def sessions_view(engine: Engine, now: float) -> dict[str, Any]:
+    """Estado de las sesiones de navegador registradas (ver cauce/sessions.py).
+
+    No contiene URL, cookies, IP ni ids de credenciales. ``state`` por sesión:
+      active            latido reciente ``ok`` y red sana
+      network_degraded  latido ``ok``, red con latencia alta o fallos parciales
+      network_unknown   latido ``ok``, el motor aún no tiene mediciones
+      pending           registrada, sin primer latido todavía
+      browser_error     el dueño informó un error (``reason`` = código de la lista cerrada)
+      network_down      la conexión de la que depende (o toda la red) está caída
+      stale             no llegan latidos dentro de ``heartbeat.timeout_s`` (navegador o Forms sin respuesta)
+    """
+    engine.sessions.evaluate()
+    out = engine.sessions.summary()
+    return {
+        "schema": SCHEMA_SESSIONS,
+        "api": API_VERSION,
+        "engine": {"version": __version__, "mode": engine.mode, "epoch": engine.audit.epoch},
+        "generated_at": _iso(now),
+        "last_seq": engine.audit.last_seq,
+        **out,
     }
