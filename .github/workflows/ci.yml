@@ -22,6 +22,8 @@ jobs:
         run: python -m cauce scenario --out reports
       - name: Guion de validación física con el simulador (no es validación física)
         run: python -m cauce fieldcheck --simulate --lab-url http://lab.sim:8770 --steps 60 --out reports/fieldcheck-sim
+      - name: Escenario de dos sesiones de navegador (simulador, sin navegador real)
+        run: python -m cauce scenario-sessions --out reports
       - name: Detección real de interfaces (Windows, solo lectura)
         if: runner.os == 'Windows'
         run: |

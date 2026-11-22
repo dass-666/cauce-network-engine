@@ -30,6 +30,7 @@ simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno
 | Salida de consola con acentos/símbolos | Verificado en Windows (CI) | La CI encontró un fallo con cp1252, que ya está corregido |
 | Acentos en nombres de adaptador («Conexión») | Verificado en Windows (CI, `powershell.exe` real) | El MSI mostró «Conexi¢n» (cp850 leído como cp1252). Corregido con salida Base64/UTF‑8; `PowerShellEncodingTest`. Falta verlo en el MSI tras reinstalar |
 | Selección de interfaz en Windows por IP de origen | **Sin verificar con dos salidas reales** | Depende del modelo *strong host* de Windows (ver abajo) |
+| Seguimiento de 2 sesiones de navegador (estado, aislamiento, estabilidad) | **Simulado** (rama `feat/sesiones-navegador`) | `tests/test_sessions.py`, `python -m cauce scenario-sessions`. Sin navegador real, sin Monitor/Forms reales, sin Windows físico. Ver [SESIONES_NAVEGADOR.md](SESIONES_NAVEGADOR.md) §6 |
 | Independencia real de dos ISP y conmutación física | **Pendiente (expresamente)** | El MSI solo tiene un gateway utilizable. Requiere hardware: `docs/HARDWARE.md` |
 
 ## Cambios de 0.2.0 (rama `claude/consolidacion-integracion`)
