@@ -96,6 +96,33 @@ las dos sesiones dependen de la misma conexión y caerán a la vez si esta cae.
 
 Regla de fallo seguro (igual que la conectividad): si Network no responde, Monitor debe mostrar «sin información», **nunca** «sesión caída».
 
+## 4b. Fases de diagnóstico y protección contra repeticiones (E4)
+
+Además de `state` (técnico), cada sesión expone `phase`, pensada para que Monitor la muestre a una persona:
+
+| phase | Cuándo | Qué hace la persona |
+|---|---|---|
+| `iniciada` | registrada, sin primer latido | nada |
+| `activa` | latido ok (incluye red lenta) | nada |
+| `perdida_conectividad` | la conexión de la sesión está caída | esperar |
+| `recuperada` | volvió a `active` hace menos de 120 s tras `network_down`, `stale`, `browser_error` o `network_unknown` | comprobar que la página sigue donde estaba |
+| `requiere_intervencion` | se interrumpió **mientras Forms declaraba `operation: "in_progress"`**, o Forms informó `session_expired` | revisar a mano y marcar como resuelta |
+| `incierta` | sin latidos (`stale`) o sin mediciones de red | comprobar el navegador |
+| `interrumpida` | Forms informó un error del navegador (p. ej. `browser_closed`) | reabrir la sesión |
+| `cerrada` | `DELETE` de la sesión; se guardan las 10 últimas en `closed` de `/status/sessions` | nada |
+
+- Latido nuevo: `{"status": "ok", "operation": "idle" | "in_progress"}`. Forms declara `in_progress` justo antes de una acción
+  que no se puede repetir sin riesgo (enviar, confirmar) e `idle` al terminar.
+- **Regla de no repetición:** si la sesión se interrumpe con una operación en curso, queda `requires_human: true` y
+  **recuperar la red no lo quita**. Solo lo quita `POST /api/v1/sessions/{id}/resolve` con credencial `admin` (evento de
+  auditoría `session.human_resolved`). Network Engine nunca relanza nada: no tiene forma de enviar un formulario.
+  Forms debe consultar `requires_human` antes de reintentar y no reintentar si es `true`.
+- Eventos de auditoría nuevos: `session.requires_human`, `session.recovered`, `session.human_resolved`.
+- Prueba de laboratorio (paso 09b de `7_VALIDACION_INTEGRAL.cmd`): Chromium real en el portal propio (127.0.0.1), red
+  SIMULADA, recorre las 8 fases, rellena un campo con un dato ficticio **sin enviar** y comprueba que ninguna petición POST
+  salió de la página y que el motor no creó tareas. Es evidencia **simulada** (F4 y F9 «Aprobado en simulación»).
+  Hasta que Forms integre el cliente, el script de laboratorio hace de dueño de la sesión; Forms no se ha modificado.
+
 ## 5. Tiempos de detección (simulación, valores por defecto)
 
 | Situación | Se detecta en | Depende de |

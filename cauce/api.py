@@ -163,6 +163,11 @@ class CauceAPI:
             return e.sessions.close(m["sid"], p.token_id, admin=admin,
                                     reason="cerrada por el operador" if admin else "cerrada por su dueño")
 
+        @r("POST", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})/resolve")
+        def sess_resolve(req, m, q, body):
+            # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
+            return e.sessions.view(e.sessions.resolve(m["sid"]))
+
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):
             return dict(self.tokens.status(), tokens=self.tokens.list())

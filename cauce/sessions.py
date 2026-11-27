@@ -42,7 +42,15 @@ from .audit import AuditLog
 # Estados globales de una sesión, de mayor a menor prioridad.
 STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
 ERROR_CODES = ("page_unreachable", "navigation_timeout", "browser_closed", "session_expired", "network_error", "other")
-HEARTBEAT_FIELDS = {"status", "error_code"}
+HEARTBEAT_FIELDS = {"status", "error_code", "operation"}
+OPERATIONS = ("idle", "in_progress")      # el dueño dice si hay una operación (p. ej. un envío) a medio hacer
+INTERRUPTED = ("network_down", "stale", "browser_error")
+HUMAN_ERROR_CODES = ("session_expired",)  # hace falta que una persona vuelva a entrar
+RECOVERED_WINDOW_S = 120.0
+CLOSED_KEPT = 10
+# E4: fase legible para personas (Monitor), derivada del estado. «requiere_intervencion» tiene prioridad.
+PHASES = {"pending": "iniciada", "active": "activa", "network_degraded": "activa", "network_down": "perdida_conectividad",
+          "browser_error": "interrumpida", "stale": "incierta", "network_unknown": "incierta"}
 REGISTER_FIELDS = {"label", "connection_id", "authorized_by_user", "heartbeat_timeout_s"}
 HARD_MAX_SESSIONS = 8
 MIN_HEARTBEAT_INTERVAL_S = 0.5     # latidos más frecuentes se rechazan (429)
@@ -74,6 +82,11 @@ class BrowserSession:
     state_since: float = 0.0
     changes: deque = field(default_factory=lambda: deque(maxlen=200))   # instantes de cambio de estado
     network_state: str = "unknown"
+    operation: Optional[str] = None          # idle | in_progress (lo último que dijo el dueño)
+    recovered_from: Optional[str] = None
+    recovered_at: Optional[float] = None
+    requires_human: bool = False             # solo lo levanta el operador (resolve), nunca el dueño ni el motor
+    human_reason: Optional[str] = None
 
 
 # Función que devuelve el estado de red de una conexión (o global si es None):
@@ -95,6 +108,7 @@ class SessionRegistry:
         self.clock = clock
         self._lock = threading.RLock()
         self._sessions: dict[str, BrowserSession] = {}
+        self._closed: deque = deque(maxlen=CLOSED_KEPT)
 
     # --- registro ---------------------------------------------------------
     def register(self, owner_token_id: str, owner_name: str, body: dict[str, Any]) -> BrowserSession:
@@ -154,6 +168,9 @@ class SessionRegistry:
             raise SessionError(400, "invalid_request", "error_code solo se admite con status 'error'")
         if status == "error" and code not in ERROR_CODES:
             raise SessionError(400, "invalid_error_code", f"error_code debe ser uno de: {', '.join(ERROR_CODES)}")
+        op = body.get("operation")
+        if op is not None and op not in OPERATIONS:
+            raise SessionError(400, "invalid_request", f"operation debe ser uno de: {', '.join(OPERATIONS)}")
         now = self.clock()
         with self._lock:
             s = self._owned(sid, token_id)
@@ -161,6 +178,8 @@ class SessionRegistry:
                 raise SessionError(429, "heartbeat_too_frequent",
                                    f"Latidos como máximo cada {MIN_HEARTBEAT_INTERVAL_S} s")
             s.last_heartbeat, s.reported, s.error_code = now, status, code
+            if op is not None:
+                s.operation = op
             s.heartbeats += 1
         self.evaluate()
         return s
@@ -169,9 +188,21 @@ class SessionRegistry:
         with self._lock:
             s = self._owned(sid, token_id, admin)
             del self._sessions[sid]
+            v = self.view(s)
+            self._closed.appendleft({**v, "state": "closed", "phase": "cerrada", "reason": reason,
+                                     "closed_at": self.clock()})
         self.audit.record("session.closed", f"Sesión de navegador cerrada: {s.label} ({reason})",
-                          session_id=s.id, label=s.label)
+                          session_id=s.id, label=s.label, requires_human=s.requires_human)
         return {"closed": s.id}
+
+    def resolve(self, sid: str) -> BrowserSession:
+        """Una PERSONA (credencial admin, el operador) confirma que revisó la sesión. Nada se repite solo."""
+        with self._lock:
+            s = self._owned(sid, "", admin=True)
+            was, s.requires_human, s.human_reason = s.human_reason, False, None
+        self.audit.record("session.human_resolved", f"Sesión {s.label}: revisada por el operador", session_id=s.id,
+                          reason=was)
+        return s
 
     def get(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
         with self._lock:
@@ -216,9 +247,30 @@ class SessionRegistry:
                         s.changes.append(now)
                         changes.append((s.id, s.label, old, state, reason))
                     s.state, s.reason = state, reason
+        flagged, recovered = [], []
+        with self._lock:
+            for sid, label, old, new, reason in changes:
+                s = self._sessions.get(sid)
+                if s is None:
+                    continue
+                if new in INTERRUPTED and s.operation == "in_progress" and not s.requires_human:
+                    # Una operación a medias (p. ej. un envío) quedó con resultado desconocido: NO se repite sola.
+                    s.requires_human, s.human_reason = True, "operation_interrupted"
+                    flagged.append((sid, label, s.human_reason))
+                elif new == "browser_error" and reason in HUMAN_ERROR_CODES and not s.requires_human:
+                    s.requires_human, s.human_reason = True, reason
+                    flagged.append((sid, label, reason))
+                if new == "active" and old in INTERRUPTED + ("network_unknown",):
+                    s.recovered_from, s.recovered_at = old, now
+                    recovered.append((sid, label, old))
         for sid, label, old, new, reason in changes:
             self.audit.record("session.state", f"Sesión {label}: {old} -> {new}",
                               session_id=sid, old=old, new=new, reason=reason)
+        for sid, label, why in flagged:
+            self.audit.record("session.requires_human", f"Sesión {label}: requiere revisión humana ({why})",
+                              session_id=sid, reason=why)
+        for sid, label, old in recovered:
+            self.audit.record("session.recovered", f"Sesión {label}: recuperada tras {old}", session_id=sid, previous=old)
 
     # --- vistas -------------------------------------------------------------
     def view(self, s: BrowserSession) -> dict[str, Any]:
@@ -238,7 +290,21 @@ class SessionRegistry:
                           "timeout_s": s.heartbeat_timeout_s, "reported": s.reported,
                           "error_code": s.error_code, "count": s.heartbeats},
             "stability": {"state_changes_10m": recent, "state_changes_total": len(s.changes)},
+            "phase": self.phase(s, now),
+            "operation": s.operation,
+            "requires_human": s.requires_human,
+            "human_reason": s.human_reason,
+            "recovered": ({"from": s.recovered_from, "age_s": round(now - s.recovered_at, 1)}
+                          if s.recovered_at is not None and now - s.recovered_at <= RECOVERED_WINDOW_S else None),
         }
+
+    @staticmethod
+    def phase(s: BrowserSession, now: float) -> str:
+        if s.requires_human:
+            return "requiere_intervencion"
+        if s.state == "active" and s.recovered_at is not None and now - s.recovered_at <= RECOVERED_WINDOW_S:
+            return "recuperada"
+        return PHASES.get(s.state, "incierta")
 
     def summary(self) -> dict[str, Any]:
         with self._lock:
@@ -247,6 +313,8 @@ class SessionRegistry:
             return {
                 "max_sessions": self.max_sessions,
                 "sessions": [self.view(s) for s in ss],
+                "closed": [{k: v for k, v in c.items() if k != "closed_at"} | {"closed_age_s": round(self.clock() - c["closed_at"], 1)}
+                           for c in self._closed],
                 "isolation": {
                     # siempre true por diseño (registro rechaza lo contrario); se expone para que Monitor lo vigile
                     "one_credential_per_session": len({s.owner_token_id for s in ss}) == len(ss),
