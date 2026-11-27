@@ -280,7 +280,7 @@ class MotorTest(SessionApiBase):
         for palabra in ("cookie", "url", "password", "contrase"):
             self.assertNotIn(palabra, raw.lower())
         doc = json.loads(raw)
-        self.assertEqual(set(doc), {"schema", "saved_at", "sessions", "closed", "sha256"})
+        self.assertEqual(set(doc), {"schema", "saved_at", "sessions", "closed", "pending", "sha256"})
         st = SessionStore(path)
         r2 = SessionRegistry(self.eng.audit, lambda c: "ok", lambda c: True, store=st, clock=self.clock)   # «nuevo motor»
         s = r2.all()[0]

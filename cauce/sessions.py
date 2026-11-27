@@ -32,6 +32,13 @@ Aislamiento:
   quita. Las que llevan demasiado sin latir (``restore_max_age_s``) se cierran como
   caducadas sin perder la marca de intervención. Sin persistencia, el dueño recibe 404
   ``unknown_session`` y debe registrarla de nuevo.
+- Marcas pendientes (E6): si una sesión que requería intervención humana se cierra sin que
+  una persona la revise (caducidad, cierre del dueño, exceso de sesiones al restaurar), su
+  marca queda pendiente. El siguiente registro con la misma credencial o la misma etiqueta
+  la hereda. Si el archivo de estado no se puede leer, o solo se pudo usar el respaldo
+  (más antiguo), queda una marca general que se aplica a todo registro nuevo hasta que una
+  persona resuelva alguna sesión. Ni la caducidad, ni un archivo dañado, ni un respaldo,
+  ni recuperar la red pueden dar por buena una operación incierta.
 """
 from __future__ import annotations
 
@@ -44,7 +51,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .audit import AuditLog
-from .session_store import SessionStore, clean_session
+from .session_store import SessionStore, clean_pending, clean_session
 
 # Estados globales de una sesión, de mayor a menor prioridad.
 STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
@@ -120,6 +127,9 @@ class SessionRegistry:
         self._lock = threading.RLock()
         self._sessions: dict[str, BrowserSession] = {}
         self._closed: deque = deque(maxlen=CLOSED_KEPT)
+        # Marcas de intervención humana sin resolver de sesiones ya cerradas (E6). Sin límite de tamaño a propósito:
+        # cada una exige que una persona la revise; están acotadas por max_sessions y por las etiquetas en uso.
+        self._pending: list[dict] = []
         self.store = store
         self.restore_max_age_s = float(restore_max_age_s)
         self._last_save = 0.0
@@ -146,9 +156,10 @@ class SessionRegistry:
                 return
             sessions = [self._persisted(x) for x in self._sessions.values()]
             closed = list(self._closed)
+            pending = [dict(p) for p in self._pending]
             self._dirty, self._last_save = False, now
         try:
-            self.store.save(sessions, closed, now)
+            self.store.save(sessions, closed, now, pending)
             if self._write_failed:
                 self._write_failed = False
                 self.audit.record("session.state_saved", "Estado de sesiones guardado de nuevo tras un fallo")
@@ -160,19 +171,41 @@ class SessionRegistry:
                 self.audit.record("session.state_write_failed",
                                   "No se pudo guardar el estado de las sesiones (sigue en memoria)", error=type(e).__name__)
 
+    def _park(self, s: BrowserSession, now: float) -> None:
+        """La sesión se cierra con una marca sin resolver: la marca queda pendiente para su próximo registro.
+        Llamar con el lock tomado."""
+        if s.requires_human:
+            self._pending.append({"owner_token_id": s.owner_token_id, "label": s.label,
+                                  "reason": s.human_reason or "operation_interrupted", "session_id": s.id, "since": now})
+
+    def _general_mark(self, reason: str, now: float) -> None:
+        if not any(p["reason"] == reason and p["owner_token_id"] is None and p["label"] is None for p in self._pending):
+            self._pending.append({"owner_token_id": None, "label": None, "reason": reason, "session_id": None,
+                                  "since": now})
+
     def _restore(self) -> None:
         doc, status = self.store.load()
+        now = self.clock()
         if status == "corrupt":
             self.audit.record("session.state_corrupt",
-                              "Estado de sesiones dañado y sin respaldo válido: se empieza vacío. Revisar a mano "
-                              "las operaciones que estuvieran en curso.")
+                              "Estado de sesiones dañado y sin respaldo válido: se empieza vacío. Toda sesión nueva "
+                              "requerirá revisión humana hasta que una persona resuelva una.")
+            with self._lock:
+                self._general_mark("previous_state_unreadable", now)
+            self._save()
             return
         if doc is None:
             return
         if status == "backup":
             self.audit.record("session.state_recovered_from_backup",
-                              "Estado de sesiones dañado: se recuperó la copia anterior (puede faltar el último cambio)")
-        now = self.clock()
+                              "Estado de sesiones dañado: se recuperó la copia anterior (puede faltar el último cambio); "
+                              "todas las sesiones requieren revisión humana")
+        for raw in doc.get("pending") or []:
+            p = clean_pending(raw)
+            if p is not None:
+                self._pending.append(p)
+        if status == "backup":
+            self._general_mark("state_recovered_from_backup", now)
         for c in doc.get("closed") or []:
             if isinstance(c, dict) and isinstance(c.get("closed_at"), (int, float)):
                 self._closed.append(c)
@@ -192,15 +225,24 @@ class SessionRegistry:
             if d["operation"] == "in_progress" and not s.requires_human:
                 # El resultado de esa operación es desconocido: el reinicio NUNCA la da por buena ni la repite.
                 s.requires_human, s.human_reason = True, "engine_restart_during_operation"
+            if status == "backup" and not s.requires_human:
+                # El respaldo es anterior al último cambio: lo que pasó después es desconocido.
+                s.requires_human, s.human_reason = True, "state_recovered_from_backup"
             if now - ref > self.restore_max_age_s:
                 v = self.view(s)
                 self._closed.appendleft({**v, "state": "closed", "phase": "cerrada", "reason": "expired_after_restart",
                                          "closed_at": now})
+                self._park(s, now)
                 expired.append(s)
                 continue
             if len(self._sessions) < self.max_sessions:
                 self._sessions[s.id] = s
                 restored.append(s)
+            else:                                           # p. ej. se redujo sessions.max: nunca se pierde en silencio
+                self._closed.appendleft({**self.view(s), "state": "closed", "phase": "cerrada",
+                                         "reason": "over_limit_after_restart", "closed_at": now})
+                self._park(s, now)
+                expired.append(s)
         for s in restored:
             self.audit.record("session.restored", f"Sesión {s.label}: restaurada tras reinicio (incierta hasta su próximo latido)",
                               session_id=s.id, requires_human=s.requires_human, reason=s.human_reason)
@@ -211,7 +253,7 @@ class SessionRegistry:
         for s in expired:
             self.audit.record("session.expired", f"Sesión {s.label}: caducada tras el reinicio", session_id=s.id,
                               requires_human=s.requires_human)
-        if restored or expired or status == "backup":
+        if restored or expired or status == "backup" or self._pending:
             self._save()
 
     # --- registro ---------------------------------------------------------
@@ -258,6 +300,17 @@ class SessionRegistry:
                                registered_at=now, state_since=now)
             if inherited is not None:
                 s.requires_human, s.human_reason = True, inherited[0]
+            # Marcas pendientes de sesiones cerradas sin revisar (misma credencial o misma etiqueta) y marcas
+            # generales (estado ilegible o recuperado del respaldo): un registro nuevo nunca las borra.
+            mine = [p for p in self._pending if p["owner_token_id"] == owner_token_id or p["label"] == label]
+            general = [p for p in self._pending if p["owner_token_id"] is None and p["label"] is None]
+            if mine or general:
+                if not s.requires_human:
+                    s.requires_human, s.human_reason = True, (mine or general)[0]["reason"]
+                self._pending = [p for p in self._pending if p not in mine]   # pasan a la sesión nueva
+                pending_used = len(mine) + len(general)
+            else:
+                pending_used = 0
             self._sessions[s.id] = s
         if replaced is not None:
             self.audit.record("session.replaced", f"Sesión {replaced.label}: sustituida por un nuevo registro de su dueño "
@@ -265,6 +318,10 @@ class SessionRegistry:
                               requires_human=replaced.requires_human)
         self.audit.record("session.registered", f"Sesión de navegador registrada: {label}",
                           session_id=s.id, label=label, connection_id=cid, registered_by=owner_name)
+        if pending_used:
+            self.audit.record("session.requires_human",
+                              f"Sesión {label}: hereda una revisión humana pendiente ({s.human_reason})",
+                              session_id=s.id, reason=s.human_reason)
         self.evaluate()
         self._save()
         return s
@@ -318,6 +375,7 @@ class SessionRegistry:
             v = self.view(s)
             self._closed.appendleft({**v, "state": "closed", "phase": "cerrada", "reason": reason,
                                      "closed_at": self.clock()})
+            self._park(s, self.clock())
         self.audit.record("session.closed", f"Sesión de navegador cerrada: {s.label} ({reason})",
                           session_id=s.id, label=s.label, requires_human=s.requires_human)
         self._save()
@@ -328,8 +386,11 @@ class SessionRegistry:
         with self._lock:
             s = self._owned(sid, "", admin=True)
             was, s.requires_human, s.human_reason = s.human_reason, False, None
+            # La persona revisó la situación: las marcas generales (estado ilegible o del respaldo) quedan atendidas.
+            general = [p for p in self._pending if p["owner_token_id"] is None and p["label"] is None]
+            self._pending = [p for p in self._pending if p not in general]
         self.audit.record("session.human_resolved", f"Sesión {s.label}: revisada por el operador", session_id=s.id,
-                          reason=was)
+                          reason=was, general_marks_cleared=len(general))
         self._save()
         return s
 
@@ -378,6 +439,7 @@ class SessionRegistry:
                     del self._sessions[s.id]
                     self._closed.appendleft({**self.view(s), "state": "closed", "phase": "cerrada",
                                              "reason": "expired", "closed_at": now})
+                    self._park(s, now)
                     expired.append(s)
             for s in self._sessions.values():
                 state, reason, net = self._compute(s, now)
@@ -464,6 +526,8 @@ class SessionRegistry:
             conns = [s.connection_id for s in ss if s.connection_id]
             return {
                 "max_sessions": self.max_sessions,
+                # marcas de intervención humana de sesiones ya cerradas; se heredan al registrar (sin ids ni dueños)
+                "pending_human_review": [{"label": p["label"], "reason": p["reason"]} for p in self._pending],
                 "sessions": [self.view(s) for s in ss],
                 "closed": [{k: v for k, v in c.items() if k != "closed_at"} | {"closed_age_s": round(self.clock() - c["closed_at"], 1)}
                            for c in self._closed],

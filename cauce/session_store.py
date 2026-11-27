@@ -51,13 +51,14 @@ class SessionStore:
         self._lock = threading.Lock()          # dentro de un proceso, una escritura cada vez
 
     # ------------------------------------------------------------------ escritura
-    def save(self, sessions: list[dict], closed: list[dict], saved_at: float) -> None:
-        """Lanza OSError si no se pudo escribir (el llamador lo anota; el motor sigue funcionando)."""
+    def save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: Optional[list[dict]] = None) -> None:
+        """Lanza OSError si no se pudo escribir (el llamador lo anota; el motor sigue funcionando).
+        ``pending``: marcas de intervención humana sin resolver de sesiones ya cerradas (E6)."""
         with self._lock:
-            self._save(sessions, closed, saved_at)
+            self._save(sessions, closed, saved_at, pending or [])
 
-    def _save(self, sessions: list[dict], closed: list[dict], saved_at: float) -> None:
-        body = {"schema": SCHEMA, "saved_at": saved_at, "sessions": sessions, "closed": closed}
+    def _save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: list[dict]) -> None:
+        body = {"schema": SCHEMA, "saved_at": saved_at, "sessions": sessions, "closed": closed, "pending": pending}
         doc = {**body, "sha256": _digest(body)}
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         tmp = f"{self.path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"   # único: dos escritores no comparten temporal
@@ -92,10 +93,13 @@ class SessionStore:
             return None
         if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
             return None
-        body = {k: doc.get(k) for k in ("schema", "saved_at", "sessions", "closed")}
+        # "pending" se añadió en E6; un archivo anterior no lo trae y su resumen se calculó sin él
+        keys = ("schema", "saved_at", "sessions", "closed") + (("pending",) if "pending" in doc else ())
+        body = {k: doc.get(k) for k in keys}
         if doc.get("sha256") != _digest(body):
             return None
-        if not isinstance(body["sessions"], list) or not isinstance(body["closed"], list):
+        body.setdefault("pending", [])
+        if not all(isinstance(body[k], list) for k in ("sessions", "closed", "pending")):
             return None
         if not isinstance(body["saved_at"], (int, float)):
             return None
@@ -140,5 +144,19 @@ def clean_session(d: Any) -> Optional[dict]:
     if not isinstance(out["heartbeat_timeout_s"], (int, float)) or not isinstance(out["registered_at"], (int, float)):
         return None
     if out["last_heartbeat"] is not None and not isinstance(out["last_heartbeat"], (int, float)):
+        return None
+    return out
+
+
+def clean_pending(d: Any) -> Optional[dict]:
+    """Valida una marca pendiente leída del disco. owner_token_id y label en None = marca general (afecta a todos)."""
+    if not isinstance(d, dict):
+        return None
+    out = {k: d.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}
+    if not isinstance(out["reason"], str) or not out["reason"]:
+        return None
+    if any(out[k] is not None and not isinstance(out[k], str) for k in ("owner_token_id", "label", "session_id")):
+        return None
+    if not isinstance(out["since"], (int, float)):
         return None
     return out
