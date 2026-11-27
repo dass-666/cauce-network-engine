@@ -108,8 +108,23 @@ class ReglasTest(unittest.TestCase):
         b.decode("ascii")
         self.assertNotIn(b"\n", b.replace(b"\r\n", b""))
         t = b.decode("ascii")
-        for p in ("rapido", "completo", "prolongado", "nocturno", "integral.py", "--navegador-forms"):
+        for p in ("rapido", "completo", "prolongado", "nocturno", "integral.py", "--navegador-forms", "al-dia"):
             self.assertIn(p, t)
+
+    def test_una_instalacion_vieja_se_detecta_para_reinstalar(self):
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            self.assertEqual(lb.desactualizado(), ["sin instalar"])
+            (lb.ne / "cauce").mkdir(parents=True)
+            lb.estado.update({"commits": {"network_engine": "sin git", "monitor": lab.VERSIONES["monitor"]["commit"],
+                                          "forms": lab.VERSIONES["forms"]["commit"]}, "forms": True})
+            lb.guardar()
+            self.assertEqual(lb.desactualizado(), [])
+            lb.estado["commits"]["monitor"] = "a" * 40
+            lb.guardar()
+            self.assertTrue(any("monitor" in m for m in lb.desactualizado()))
+            self.assertEqual(lab.main(["--dir", str(lb.d), "al-dia"]), 3)
 
 
 if __name__ == "__main__":

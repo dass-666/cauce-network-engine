@@ -228,6 +228,26 @@ class Lab:
         self.guardar()
         return self.resultado("instalacion", {"ok": True, "commits": commits})
 
+    def desactualizado(self) -> list[str]:
+        """Motivos por los que la copia instalada no corresponde a este paquete (vacío = al día). Sin estado.json:
+        «sin instalar». Así el lanzador integral nunca prueba código viejo sin decirlo."""
+        if not (self.d / "estado.json").exists():
+            return ["sin instalar"]
+        c = self.estado.get("commits") or {}
+        motivos = []
+        head = subprocess.run(["git", "-C", str(NE_REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if head and c.get("network_engine") not in (head, "sin git"):
+            motivos.append(f"Network Engine instalado {str(c.get('network_engine'))[:7]} y esta carpeta está en {head[:7]}")
+        for nombre in ("monitor", "forms"):
+            if nombre == "forms" and not self.estado.get("forms", True):
+                continue
+            fijado = VERSIONES[nombre]["commit"]
+            if c.get(nombre) and c[nombre] != fijado:
+                motivos.append(f"{nombre} instalado {c[nombre][:7]} y el fijado es {fijado[:7]}")
+        if not (self.ne / "cauce").exists():
+            motivos.append("falta la copia de Network Engine")
+        return motivos
+
     # -------------------------------------------------------------------- comprobaciones
     def comprobar_versiones(self) -> dict:
         def leer(p: Path, clave: str) -> str | None:
@@ -322,7 +342,9 @@ class Lab:
                                 "MONITOREO_DATA_DIR": str(self.datos("monitor", "x").parent),
                                 "MONITOREO_ADMIN_PASSWORD": self.estado["monitor_admin"],
                                 "MONITOREO_NETWORK_TOKEN_FILE": str(token), "MONITOREO_NETWORK_DIR": str(self.ne),
-                                "MONITOREO_NETWORK_PUERTO": str(self.p["network_engine"])})
+                                "MONITOREO_NETWORK_PUERTO": str(self.p["network_engine"]),
+                                # la pantalla Red de Monitor resume la última validación integral (solo cifras)
+                                "MONITOREO_RESULTADOS_VALIDACION": str(self.d / "informes")})
         self._lanzar("monitor", [self.py("monitor"), "-m", "monitoreo"], self.monitor, env_m)
         return self._esperar_puerto(self.p["monitor"], 90)
 
@@ -632,6 +654,7 @@ def main(argv=None) -> int:
     pi.add_argument("--fuente-monitor", help="copiar Monitor de esta carpeta en vez de descargarlo")
     pi.add_argument("--fuente-forms", help="copiar Forms de esta carpeta en vez de descargarlo")
     sub.add_parser("comprobar")
+    sub.add_parser("al-dia", help="0 si la instalación corresponde a este paquete; 3 si hay que reinstalar")
     pn = sub.add_parser("iniciar")
     pn.add_argument("--modo", choices=["simulado", "real"], default="simulado")
     pn.add_argument("--lab-url", help="modo real: URL de TU servidor de laboratorio, p. ej. http://mi-servidor:8770")
@@ -653,6 +676,15 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     lab = Lab(Path(a.dir))
+    if a.cmd == "al-dia":
+        if not lab.d.exists():
+            decir("El laboratorio no está instalado.")
+            return 3
+        validar_carpeta(lab.d, crear=False)
+        m = lab.desactualizado()
+        for x in m:
+            decir(f"  Desactualizado: {x}")
+        return 3 if m else 0
     validar_carpeta(lab.d, crear=a.cmd == "instalar")
     if a.cmd == "instalar":
         imprimir("Instalación", lab.instalar(a.sin_venv, a.sin_forms, a.navegador_forms,
