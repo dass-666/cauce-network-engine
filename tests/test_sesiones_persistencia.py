@@ -290,3 +290,20 @@ class MotorTest(SessionApiBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EventosPublicadosTest(SessionApiBase):
+    def test_eventos_de_e4_y_e5_llegan_a_la_lectura_de_monitor(self):
+        """Antes de E5 /status/events filtraba estos tipos: Monitor no podía mostrarlos."""
+        self.a.register("forms-a", connection_id="sim-a", heartbeat_timeout_s=10)
+        self.clock.advance(1)
+        self.a.heartbeat(True, operation="in_progress")
+        self.fail_link("sim-a")
+        self.admin._call("POST", f"/sessions/{self.a.session_id}/resolve")
+        self.eng.check_resume(10_000.0, 1_000.0)
+        raw = self.raw("GET", "/api/v1/status/events?since=0&limit=500", self.read_token)[1]
+        kinds = [e["kind"] for e in json.loads(raw)["events"]]
+        for k in ("session.requires_human", "session.human_resolved", "system.resume_detected"):
+            self.assertIn(k, kinds)
+        self.assertNotIn(self.tok_a["token"], raw)
+        self.assertNotIn("owner", raw)
