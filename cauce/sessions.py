@@ -24,8 +24,14 @@ Aislamiento:
   cerrarla (403 ``not_session_owner``).
 - El estado de una sesión se calcula solo con SUS latidos y SU conexión: un fallo en
   otra sesión o en otra conexión no la modifica (lo comprueban las pruebas).
-- Las sesiones viven en memoria: si el motor se reinicia, desaparecen y el sistema
-  dueño debe volver a registrarlas (recibe 404 ``unknown_session``).
+- Persistencia (E5, ``sessions.persist``, activada por omisión): el estado de diagnóstico se
+  guarda en ``sessions_state.json`` (ver cauce/session_store.py). Tras un reinicio, las
+  sesiones vuelven como «incierta» (``restored``) hasta que su dueño vuelva a latir con la
+  misma credencial. Una sesión que tenía una operación en curso, o que ya requería
+  intervención humana, vuelve con ``requires_human`` y SOLO una persona (``resolve``) lo
+  quita. Las que llevan demasiado sin latir (``restore_max_age_s``) se cierran como
+  caducadas sin perder la marca de intervención. Sin persistencia, el dueño recibe 404
+  ``unknown_session`` y debe registrarla de nuevo.
 """
 from __future__ import annotations
 
@@ -38,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .audit import AuditLog
+from .session_store import SessionStore, clean_session
 
 # Estados globales de una sesión, de mayor a menor prioridad.
 STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
@@ -55,6 +62,8 @@ REGISTER_FIELDS = {"label", "connection_id", "authorized_by_user", "heartbeat_ti
 HARD_MAX_SESSIONS = 8
 MIN_HEARTBEAT_INTERVAL_S = 0.5     # latidos más frecuentes se rechazan (429)
 STABILITY_WINDOW_S = 600.0
+HEARTBEAT_SAVE_EVERY_S = 30.0      # los instantes de latido se guardan como mucho cada 30 s (los cambios, al momento)
+DEFAULT_RESTORE_MAX_AGE_S = 3600.0
 _LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 
 
@@ -87,6 +96,7 @@ class BrowserSession:
     recovered_at: Optional[float] = None
     requires_human: bool = False             # solo lo levanta el operador (resolve), nunca el dueño ni el motor
     human_reason: Optional[str] = None
+    restored: bool = False                   # vuelve de un reinicio del motor y aún no ha latido desde entonces
 
 
 # Función que devuelve el estado de red de una conexión (o global si es None):
@@ -97,7 +107,8 @@ NetworkStateFn = Callable[[Optional[str]], str]
 class SessionRegistry:
     def __init__(self, audit: AuditLog, network_state: NetworkStateFn,
                  connection_exists: Callable[[str], bool], max_sessions: int = 2,
-                 default_timeout_s: float = 30.0, clock: Callable[[], float] = time.time):
+                 default_timeout_s: float = 30.0, clock: Callable[[], float] = time.time,
+                 store: Optional[SessionStore] = None, restore_max_age_s: float = DEFAULT_RESTORE_MAX_AGE_S):
         if not (1 <= max_sessions <= HARD_MAX_SESSIONS):
             raise ValueError(f"sessions.max debe estar entre 1 y {HARD_MAX_SESSIONS}")
         self.audit = audit
@@ -109,6 +120,99 @@ class SessionRegistry:
         self._lock = threading.RLock()
         self._sessions: dict[str, BrowserSession] = {}
         self._closed: deque = deque(maxlen=CLOSED_KEPT)
+        self.store = store
+        self.restore_max_age_s = float(restore_max_age_s)
+        self._last_save = 0.0
+        self._dirty = False
+        self._write_failed = False
+        if store is not None:
+            self._restore()
+
+    # --- persistencia -------------------------------------------------------
+    def _persisted(self, s: BrowserSession) -> dict:
+        return {"id": s.id, "label": s.label, "owner_token_id": s.owner_token_id, "owner_name": s.owner_name,
+                "connection_id": s.connection_id, "heartbeat_timeout_s": s.heartbeat_timeout_s,
+                "registered_at": s.registered_at, "last_heartbeat": s.last_heartbeat, "state": s.state,
+                "operation": s.operation, "requires_human": s.requires_human, "human_reason": s.human_reason,
+                "heartbeats": s.heartbeats}
+
+    def _save(self, force: bool = True) -> None:
+        """Guarda el estado. force=False solo si pasó HEARTBEAT_SAVE_EVERY_S (latidos). Nunca lanza."""
+        if self.store is None:
+            return
+        now = self.clock()
+        with self._lock:
+            if not force and not (self._dirty and now - self._last_save >= HEARTBEAT_SAVE_EVERY_S):
+                return
+            sessions = [self._persisted(x) for x in self._sessions.values()]
+            closed = list(self._closed)
+            self._dirty, self._last_save = False, now
+        try:
+            self.store.save(sessions, closed, now)
+            if self._write_failed:
+                self._write_failed = False
+                self.audit.record("session.state_saved", "Estado de sesiones guardado de nuevo tras un fallo")
+        except OSError as e:
+            with self._lock:
+                self._dirty = True
+            if not self._write_failed:                    # se anota una vez, no en cada intento
+                self._write_failed = True
+                self.audit.record("session.state_write_failed",
+                                  "No se pudo guardar el estado de las sesiones (sigue en memoria)", error=type(e).__name__)
+
+    def _restore(self) -> None:
+        doc, status = self.store.load()
+        if status == "corrupt":
+            self.audit.record("session.state_corrupt",
+                              "Estado de sesiones dañado y sin respaldo válido: se empieza vacío. Revisar a mano "
+                              "las operaciones que estuvieran en curso.")
+            return
+        if doc is None:
+            return
+        if status == "backup":
+            self.audit.record("session.state_recovered_from_backup",
+                              "Estado de sesiones dañado: se recuperó la copia anterior (puede faltar el último cambio)")
+        now = self.clock()
+        for c in doc.get("closed") or []:
+            if isinstance(c, dict) and isinstance(c.get("closed_at"), (int, float)):
+                self._closed.append(c)
+        restored, expired = [], []
+        for raw in doc.get("sessions") or []:
+            d = clean_session(raw)
+            if d is None:
+                continue
+            ref = d["last_heartbeat"] if d["last_heartbeat"] is not None else d["registered_at"]
+            s = BrowserSession(id=d["id"], label=d["label"], owner_token_id=d["owner_token_id"],
+                               owner_name=d["owner_name"], connection_id=d["connection_id"],
+                               heartbeat_timeout_s=float(d["heartbeat_timeout_s"]), registered_at=d["registered_at"],
+                               last_heartbeat=None, heartbeats=d["heartbeats"], state="stale", reason="engine_restarted",
+                               state_since=now, operation=d["operation"], requires_human=d["requires_human"],
+                               human_reason=d["human_reason"], restored=True)
+            s.registered_at = now          # el plazo de latido cuenta desde el reinicio, no desde el registro original
+            if d["operation"] == "in_progress" and not s.requires_human:
+                # El resultado de esa operación es desconocido: el reinicio NUNCA la da por buena ni la repite.
+                s.requires_human, s.human_reason = True, "engine_restart_during_operation"
+            if now - ref > self.restore_max_age_s:
+                v = self.view(s)
+                self._closed.appendleft({**v, "state": "closed", "phase": "cerrada", "reason": "expired_after_restart",
+                                         "closed_at": now})
+                expired.append(s)
+                continue
+            if len(self._sessions) < self.max_sessions:
+                self._sessions[s.id] = s
+                restored.append(s)
+        for s in restored:
+            self.audit.record("session.restored", f"Sesión {s.label}: restaurada tras reinicio (incierta hasta su próximo latido)",
+                              session_id=s.id, requires_human=s.requires_human, reason=s.human_reason)
+            if s.human_reason == "engine_restart_during_operation":
+                self.audit.record("session.requires_human",
+                                  f"Sesión {s.label}: requiere revisión humana (motor reiniciado con una operación en curso)",
+                                  session_id=s.id, reason=s.human_reason)
+        for s in expired:
+            self.audit.record("session.expired", f"Sesión {s.label}: caducada tras el reinicio", session_id=s.id,
+                              requires_human=s.requires_human)
+        if restored or expired or status == "backup":
+            self._save()
 
     # --- registro ---------------------------------------------------------
     def register(self, owner_token_id: str, owner_name: str, body: dict[str, Any]) -> BrowserSession:
@@ -130,7 +234,18 @@ class SessionRegistry:
         if not (5.0 <= timeout <= 300.0):
             raise SessionError(400, "invalid_request", "heartbeat_timeout_s debe estar entre 5 y 300")
         now = self.clock()
+        inherited, replaced = None, None
         with self._lock:
+            prev = next((x for x in self._sessions.values() if x.owner_token_id == owner_token_id), None)
+            if prev is not None and prev.restored:
+                # El dueño perdió su id al reiniciarse él también: la sesión restaurada se sustituye, pero su
+                # marca de intervención humana PASA a la nueva (un nuevo registro nunca la borra).
+                del self._sessions[prev.id]
+                self._closed.appendleft({**self.view(prev), "state": "closed", "phase": "cerrada",
+                                         "reason": "replaced_after_restart", "closed_at": now})
+                replaced = prev
+                if prev.requires_human:
+                    inherited = (prev.human_reason, prev.operation)
             if any(s.owner_token_id == owner_token_id for s in self._sessions.values()):
                 raise SessionError(409, "credential_has_session",
                                    "Esta credencial ya tiene una sesión activa (una credencial = una sesión)")
@@ -141,10 +256,17 @@ class SessionRegistry:
             s = BrowserSession(id="bs_" + secrets.token_hex(6), label=label, owner_token_id=owner_token_id,
                                owner_name=owner_name, connection_id=cid, heartbeat_timeout_s=timeout,
                                registered_at=now, state_since=now)
+            if inherited is not None:
+                s.requires_human, s.human_reason = True, inherited[0]
             self._sessions[s.id] = s
+        if replaced is not None:
+            self.audit.record("session.replaced", f"Sesión {replaced.label}: sustituida por un nuevo registro de su dueño "
+                              "tras el reinicio", session_id=replaced.id, new_session_id=s.id,
+                              requires_human=replaced.requires_human)
         self.audit.record("session.registered", f"Sesión de navegador registrada: {label}",
                           session_id=s.id, label=label, connection_id=cid, registered_by=owner_name)
         self.evaluate()
+        self._save()
         return s
 
     def _owned(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
@@ -178,10 +300,15 @@ class SessionRegistry:
                 raise SessionError(429, "heartbeat_too_frequent",
                                    f"Latidos como máximo cada {MIN_HEARTBEAT_INTERVAL_S} s")
             s.last_heartbeat, s.reported, s.error_code = now, status, code
+            op_changed = op is not None and op != s.operation
             if op is not None:
                 s.operation = op
             s.heartbeats += 1
+            was_restored, s.restored = s.restored, False
+            self._dirty = True
         self.evaluate()
+        # un cambio de operación se guarda al momento: si el motor cae justo después, la marca «en curso» no se pierde
+        self._save(force=op_changed or was_restored)
         return s
 
     def close(self, sid: str, token_id: str, admin: bool = False, reason: str = "cerrada por su dueño") -> dict:
@@ -193,6 +320,7 @@ class SessionRegistry:
                                      "closed_at": self.clock()})
         self.audit.record("session.closed", f"Sesión de navegador cerrada: {s.label} ({reason})",
                           session_id=s.id, label=s.label, requires_human=s.requires_human)
+        self._save()
         return {"closed": s.id}
 
     def resolve(self, sid: str) -> BrowserSession:
@@ -202,6 +330,7 @@ class SessionRegistry:
             was, s.requires_human, s.human_reason = s.human_reason, False, None
         self.audit.record("session.human_resolved", f"Sesión {s.label}: revisada por el operador", session_id=s.id,
                           reason=was)
+        self._save()
         return s
 
     def get(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
@@ -217,6 +346,8 @@ class SessionRegistry:
         net = self.network_state(s.connection_id)
         if s.connection_id is not None and not self.connection_exists(s.connection_id):
             net = "down"
+        if s.restored:
+            return "stale", "engine_restarted", net
         ref = s.last_heartbeat if s.last_heartbeat is not None else s.registered_at
         if now - ref > s.heartbeat_timeout_s:
             return "stale", "no_heartbeat" if s.last_heartbeat is None else "heartbeat_timeout", net
@@ -235,8 +366,19 @@ class SessionRegistry:
     def evaluate(self) -> None:
         """Recalcula todas las sesiones y anota cada transición. Barato: no hace E/S de red."""
         now = self.clock()
-        changes = []
+        changes, expired = [], []
         with self._lock:
+            for s in list(self._sessions.values()):
+                ref = s.last_heartbeat if s.last_heartbeat is not None else s.registered_at
+                if now - ref > self.restore_max_age_s:
+                    if s.operation == "in_progress" and not s.requires_human:
+                        s.requires_human, s.human_reason = True, "operation_interrupted"
+                    # Sin latidos durante demasiado tiempo: se cierra como caducada (no se autoriza ni repite nada;
+                    # la marca de intervención humana se conserva en el historial y en la auditoría).
+                    del self._sessions[s.id]
+                    self._closed.appendleft({**self.view(s), "state": "closed", "phase": "cerrada",
+                                             "reason": "expired", "closed_at": now})
+                    expired.append(s)
             for s in self._sessions.values():
                 state, reason, net = self._compute(s, now)
                 s.network_state = net
@@ -271,6 +413,13 @@ class SessionRegistry:
                               session_id=sid, reason=why)
         for sid, label, old in recovered:
             self.audit.record("session.recovered", f"Sesión {label}: recuperada tras {old}", session_id=sid, previous=old)
+        for s in expired:
+            self.audit.record("session.expired", f"Sesión {s.label}: caducada por falta de latidos", session_id=s.id,
+                              requires_human=s.requires_human)
+        if changes or flagged or expired:
+            self._save()
+        else:
+            self._save(force=False)
 
     # --- vistas -------------------------------------------------------------
     def view(self, s: BrowserSession) -> dict[str, Any]:
@@ -294,6 +443,7 @@ class SessionRegistry:
             "operation": s.operation,
             "requires_human": s.requires_human,
             "human_reason": s.human_reason,
+            "restored": s.restored,
             "recovered": ({"from": s.recovered_from, "age_s": round(now - s.recovered_at, 1)}
                           if s.recovered_at is not None and now - s.recovered_at <= RECOVERED_WINDOW_S else None),
         }
