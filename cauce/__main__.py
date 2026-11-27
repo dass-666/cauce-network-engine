@@ -174,8 +174,9 @@ def main(argv: list[str] | None = None) -> int:
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
     tp.add_argument("--name", required=True, help="Sistema consumidor, p. ej. monitor")
-    tp.add_argument("--scope", default="read", choices=["read", "session"],
-                    help="read: Monitor (solo /status/*). session: una sesión de navegador (solo /sessions)")
+    tp.add_argument("--scope", default="read", choices=["read", "session", "review"],
+                    help="read: Monitor (solo /status/*). session: una sesión de navegador (solo /sessions). "
+                         "review: ver y resolver revisiones pendientes (centro de revisiones de Monitor)")
     tp.add_argument("--out", help="Guardar el token protegido (DPAPI en Windows) en este archivo en vez de mostrarlo")
     tsub.add_parser("list")
     tsub.add_parser("recover")

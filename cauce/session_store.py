@@ -79,11 +79,12 @@ class SessionStore:
                 json.dump(doc, fh, ensure_ascii=False)
                 fh.flush()
                 os.fsync(fh.fileno())
-            if os.path.exists(self.path) and self._read(self.path) is not None:
+            previo = self._bytes_validos(self.path)
+            if previo is not None:
                 # E8: la versión buena anterior se COPIA al respaldo (antes se movía). Al moverla, el principal no
                 # existía durante un instante y una muerte brusca justo ahí arrancaba desde el respaldo, con una
                 # revisión humana innecesaria de todas las sesiones (21 % de 150 muertes con guardado continuo).
-                self._copiar_a_respaldo()
+                self._copiar_a_respaldo(previo)
             _replace(tmp, self.path)
         finally:
             if os.path.exists(tmp):
@@ -92,19 +93,31 @@ class SessionStore:
                 except OSError:
                     pass
 
-    def _copiar_a_respaldo(self) -> None:
+    def _bytes_validos(self, path: str) -> Optional[bytes]:
+        """El contenido del archivo si es un estado válido; None si no existe, no se puede leer o está dañado.
+        Se lee UNA vez y esos mismos bytes van al respaldo (en Windows, cada apertura extra puede chocar con el
+        reemplazo de otro escritor)."""
+        try:
+            if os.path.getsize(path) > MAX_BYTES:
+                return None
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return raw if self._parse(raw) is not None else None
+
+    def _copiar_a_respaldo(self, data: bytes) -> None:
+        """Mejor esfuerzo y sin fsync: el respaldo es la versión ANTERIOR y su resumen se comprueba al leerlo. Solo el
+        principal (la versión nueva) se fuerza a disco antes de responder. E8: en Windows cada fsync puede tardar más
+        de 1 s (diagnostico-latido) y el cliente de sesión espera 2 s; dos fsync por latido eran demasiados."""
         btmp = f"{self.bak}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
         try:
-            with open(self.path, "rb") as src:
-                data = src.read()
             fd = os.open(btmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
-                fh.flush()
-                os.fsync(fh.fileno())
             _replace(btmp, self.bak)
-        except FileNotFoundError:
-            pass                                         # otro escritor lo sustituyó entre medias: su respaldo vale
+        except OSError:
+            pass                                         # sin respaldo nuevo queda el anterior; el principal no se toca
         finally:
             if os.path.exists(btmp):
                 try:
@@ -118,9 +131,17 @@ class SessionStore:
         try:
             if os.path.getsize(path) > MAX_BYTES:
                 return None
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError):
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return SessionStore._parse(raw)
+
+    @staticmethod
+    def _parse(raw: bytes) -> Optional[dict]:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
             return None
         if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
             return None

@@ -33,7 +33,7 @@ from .policy import PolicyError, RotationDisabled
 from .routing import RouteError
 from .sessions import SessionError
 from .status import MAX_EVENTS, connectivity_view, events_view, routers_view, sessions_view
-from .tokens import SCOPE_ADMIN, SCOPE_READ, SCOPE_SESSION, AccessLog, Principal, TokenError, TokenStore
+from .tokens import SCOPE_ADMIN, SCOPE_READ, SCOPE_REVIEW, SCOPE_SESSION, AccessLog, Principal, TokenError, TokenStore
 
 
 def _allowed(have: str, need: str) -> bool:
@@ -185,12 +185,12 @@ class CauceAPI:
             # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
             return e.sessions.view(e.sessions.resolve(m["sid"]))
 
-        # E7: marcas de «revisar a mano» cuya sesión ya no existe. Solo admin (el operador humano).
-        @r("GET", P + "/sessions/pending")
+        # E7: marcas de «revisar a mano» cuya sesión ya no existe. admin o (E8) la credencial «review».
+        @r("GET", P + "/sessions/pending", SCOPE_REVIEW)
         def sess_pending(req, m, q, body):
             return {"pending": e.sessions.pending()}
 
-        @r("POST", P + r"/sessions/pending/(?P<pid>pm_[0-9a-f]{12})/resolve")
+        @r("POST", P + r"/sessions/pending/(?P<pid>pm_[0-9a-f]{12})/resolve", SCOPE_REVIEW)
         def sess_pending_resolve(req, m, q, body):
             p = req._cauce_principal
             return e.sessions.resolve_pending(m["pid"], body, resolved_by=p.name)

@@ -248,7 +248,9 @@ class CauceSessionClient:
     Una credencial solo puede tener UNA sesión activa; usa una credencial distinta por sesión.
     """
 
-    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 2.0):
+    # E8: 5 s (antes 2). Un latido que cambia la operación se guarda en disco ANTES de responder (para no perder
+    # «en curso» si el motor cae); en Windows ese guardado llegó a 1,4 s en CI y con carga pasó de 2 s (intermitente).
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 5.0):
         self._c = CauceClient(token, host, port, timeout)
         self.session_id: Optional[str] = None
 

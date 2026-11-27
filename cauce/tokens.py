@@ -34,7 +34,10 @@ from .secrets_store import read_secret, write_secret
 SCOPE_READ = "read"
 SCOPE_ADMIN = "admin"
 SCOPE_SESSION = "session"   # solo rutas /sessions: registrar UNA sesión de navegador y enviarle latidos
-CREATABLE_SCOPES = (SCOPE_READ, SCOPE_SESSION)  # un token admin nunca se crea por la API
+# E8: solo ver y resolver revisiones pendientes (centro de revisiones de Monitor). Mínimo privilegio: no crea
+# credenciales, no toca rutas ni tareas, no apaga el motor, no lee la red.
+SCOPE_REVIEW = "review"
+CREATABLE_SCOPES = (SCOPE_READ, SCOPE_SESSION, SCOPE_REVIEW)  # un token admin nunca se crea por la API
 MAX_TOKENS = 20
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 _TOKEN_RE = re.compile(r"^cr1\.([0-9a-f]{8})\.([A-Za-z0-9_-]{20,128})$")
