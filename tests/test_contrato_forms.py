@@ -61,7 +61,8 @@ class ContratoTest(ContratoBase):
         with self.s.operacion():
             acciones.append("enviar")                 # la acción de la persona
         self.assertEqual(acciones, ["enviar"])
-        self.assertEqual(self.s.ultimo.estado, "activa")
+        # E8: si falla, el mensaje dice por qué (intermitente visto una vez en Windows · Py3.10)
+        self.assertEqual(self.s.ultimo.estado, "activa", (self.s.ultimo, [(m, p) for m, p, _ in self.cli.enviados]))
         self.s.cerrar()
         permitidos = campos_enviados_permitidos()
         for method, path, body in self.cli.enviados:

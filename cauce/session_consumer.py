@@ -71,8 +71,9 @@ class SesionDiagnostico:
             v = self.c.register(self.etiqueta, connection_id=self.conexion, heartbeat_timeout_s=self.latido_max_s)
         except CauceAPIError as e:
             return self._error_api(e)
-        except OSError:
-            return self._fijar(EstadoVisible(SIN_INFORMACION))
+        except OSError as e:
+            # E8: se guarda el tipo de error (p. ej. TimeoutError) para poder diagnosticar; nunca su texto
+            return self._fijar(EstadoVisible(SIN_INFORMACION, detalle={"error": type(e).__name__}))
         return self._desde_vista(v)
 
     def latir(self, ok: bool = True, error_code: Optional[str] = None, operation: Optional[str] = None) -> EstadoVisible:
@@ -90,8 +91,9 @@ class SesionDiagnostico:
                 self.c.session_id = None
                 return self._registrar()
             return self._error_api(e)
-        except OSError:
-            return self._fijar(EstadoVisible(SIN_INFORMACION))
+        except OSError as e:
+            # E8: se guarda el tipo de error (p. ej. TimeoutError) para poder diagnosticar; nunca su texto
+            return self._fijar(EstadoVisible(SIN_INFORMACION, detalle={"error": type(e).__name__}))
         return self._desde_vista(v)
 
     def cerrar(self) -> None:

@@ -80,15 +80,35 @@ class SessionStore:
                 fh.flush()
                 os.fsync(fh.fileno())
             if os.path.exists(self.path) and self._read(self.path) is not None:
-                try:
-                    _replace(self.path, self.bak)        # la versión buena anterior queda de respaldo
-                except FileNotFoundError:
-                    pass                                 # otro escritor la movió entre medias: su respaldo vale igual
+                # E8: la versión buena anterior se COPIA al respaldo (antes se movía). Al moverla, el principal no
+                # existía durante un instante y una muerte brusca justo ahí arrancaba desde el respaldo, con una
+                # revisión humana innecesaria de todas las sesiones (21 % de 150 muertes con guardado continuo).
+                self._copiar_a_respaldo()
             _replace(tmp, self.path)
         finally:
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
+                except OSError:
+                    pass
+
+    def _copiar_a_respaldo(self) -> None:
+        btmp = f"{self.bak}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        try:
+            with open(self.path, "rb") as src:
+                data = src.read()
+            fd = os.open(btmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            _replace(btmp, self.bak)
+        except FileNotFoundError:
+            pass                                         # otro escritor lo sustituyó entre medias: su respaldo vale
+        finally:
+            if os.path.exists(btmp):
+                try:
+                    os.remove(btmp)
                 except OSError:
                     pass
 
