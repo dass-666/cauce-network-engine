@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import secrets
 import threading
@@ -163,10 +164,23 @@ def clean_pending(d: Any) -> Optional[dict]:
     if not isinstance(d, dict):
         return None
     out = {k: d.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}
+    pid = d.get("id")
     if not isinstance(out["reason"], str) or not out["reason"]:
         return None
     if any(out[k] is not None and not isinstance(out[k], str) for k in ("owner_token_id", "label", "session_id")):
         return None
     if not isinstance(out["since"], (int, float)):
         return None
+    # E7: id inequívoco. Un archivo anterior no lo trae: se deriva de la marca, así es estable entre reinicios.
+    if not (isinstance(pid, str) and PENDING_ID_RE.match(pid)):
+        pid = pending_id_for(out)
+    out["id"] = pid
     return out
+
+
+PENDING_ID_RE = re.compile(r"^pm_[0-9a-f]{12}$")
+
+
+def pending_id_for(p: dict) -> str:
+    raw = json.dumps({k: p.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}, sort_keys=True)
+    return "pm_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]

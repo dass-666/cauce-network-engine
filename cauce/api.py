@@ -185,6 +185,16 @@ class CauceAPI:
             # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
             return e.sessions.view(e.sessions.resolve(m["sid"]))
 
+        # E7: marcas de «revisar a mano» cuya sesión ya no existe. Solo admin (el operador humano).
+        @r("GET", P + "/sessions/pending")
+        def sess_pending(req, m, q, body):
+            return {"pending": e.sessions.pending()}
+
+        @r("POST", P + r"/sessions/pending/(?P<pid>pm_[0-9a-f]{12})/resolve")
+        def sess_pending_resolve(req, m, q, body):
+            p = req._cauce_principal
+            return e.sessions.resolve_pending(m["pid"], body, resolved_by=p.name)
+
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):
             return dict(self.tokens.status(), tokens=self.tokens.list())
