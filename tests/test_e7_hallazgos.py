@@ -55,5 +55,46 @@ class RegistroFallidoTest(unittest.TestCase):
                         "el 409 se llevó la sesión restaurada y su marca de intervención")
 
 
+class ConsumidorCredencialRevocadaTest(unittest.TestCase):
+    """E7: el consumidor de referencia olvidaba «revisar a mano» al recibir 401 y no contaba el aviso perdido."""
+
+    def setUp(self):
+        import time as _t
+        from helpers import sim_engine
+        from cauce.api import CauceAPI
+        from cauce.client import CauceClient, CauceSessionClient
+        from cauce.session_consumer import SesionDiagnostico
+        self.t = _t
+        self.eng, _ = sim_engine(sessions={"max": 4})
+        self.api = CauceAPI(self.eng, "127.0.0.1", 0)
+        self.api.start()
+        self.adm = CauceClient(self.api.token, port=self.api.port)
+        self.tok = self.adm.create_token("forms-a", "session")
+        self.s = SesionDiagnostico(CauceSessionClient(self.tok["token"], port=self.api.port), "forms-ventanilla-1")
+        self.s.iniciar()
+
+    def tearDown(self):
+        self.api.stop()
+
+    def test_la_marca_vista_no_se_olvida_al_revocar_la_credencial(self):
+        with self.assertRaises(RuntimeError):
+            with self.s.operacion():
+                raise RuntimeError("clic sin evento submit")
+        self.assertTrue(self.s.ultimo.requiere_persona)
+        self.adm.revoke_token(self.tok["id"])
+        self.t.sleep(0.6)
+        e = self.s.latir()
+        self.assertEqual(e.estado, "credencial_invalida")
+        self.assertTrue(e.requiere_persona, "la pantalla olvidó «revisar a mano» por un 401")
+
+    def test_revocada_a_mitad_cuenta_el_aviso_que_no_llego(self):
+        hechas = []
+        with self.s.operacion():
+            hechas.append(1)
+            self.adm.revoke_token(self.tok["id"])
+        self.assertEqual(hechas, [1])
+        self.assertEqual(self.s.marcas_no_enviadas, 1, "el «terminado» no llegó al motor y la pantalla no lo sabe")
+
+
 if __name__ == "__main__":
     unittest.main()
