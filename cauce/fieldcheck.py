@@ -344,6 +344,102 @@ def run(lab_url: str, out_dir: str, simulate: bool = False, ask: Callable[[str],
         engine.shutdown("fin de la validación")
 
 
+def run_sin_servidor(objetivo: str, out_dir: str, simulate: bool = False, ask: Callable[[str], Any] = input,
+                     config_path: Optional[str] = None, engines: dict = ENGINES) -> dict:
+    """Variante SIN servidor propio: solo sondeos de conexión TCP (abrir y cerrar, sin enviar datos) a
+    ``objetivo`` (host:puerto) por cada enlace. Sirve para F1, F2 (por puerta de enlace), F3, F6, F7 y F10–F12.
+    F4, F5, F8 y F9 necesitan un servidor que cuente escrituras y sesiones: quedan omitidos.
+    Elige un objetivo que estés autorizado a usar (p. ej. un servicio del que ya eres cliente)."""
+    from .audit import verify_file
+    from .config import load
+    from .engine import Engine
+    from .models import Health, Kind
+
+    host, _, port = objetivo.rpartition(":")
+    if not host or not port.isdigit():
+        raise SystemExit("--objetivo debe ser host:puerto, p. ej. github.com:443")
+    rep = Report(simulate)
+    fast = simulate
+    over = {"data_dir": os.path.join(out_dir, "engine-data"),
+            "health": {"targets": [objetivo], "interval_s": 0.05 if fast else 2.0,
+                       "max_interval_s": 0.2 if fast else 10.0, "timeout_s": 0.5 if fast else 3.0,
+                       "fail_threshold": 3, "recover_threshold": 2},
+            "lab": {"allowed_hosts": [host], "rotation_enabled": False},   # no se lanza ninguna tarea: solo sondeos
+            "discovery": {"refresh_s": 0.2 if fast else 5.0},
+            "egress_check_url": None}
+    cfg = load(config_path, overrides=over)
+    if simulate:
+        from .simulator import SimulatedNetwork, three_links
+        net = SimulatedNetwork(three_links())
+        engine = Engine(cfg, net, net, mode="simulated")
+        poll = 0.02
+    else:
+        from .discovery import default_provider
+        from .net import RealNetwork
+        net = None
+        engine = Engine(cfg, default_provider(), RealNetwork(), mode="real")
+        poll = 0.5
+    rep.meta.update({"modo": "sin servidor propio (solo sondeos TCP)", "objetivo": objetivo, "platform": sys.platform,
+                     "python": sys.version.split()[0], "rotation_enabled": engine.rotation_enabled,
+                     "global_routes_modified_by_engine": False})
+    routes_before = default_routes() if not simulate else [{"if": "sim", "next_hop": "sim", "metric": 0}]
+    rep.add("F1", "Entorno y rutas por defecto antes", OK if (simulate or sys.platform == "win32") else INFO,
+            f"{sys.platform}, Python {rep.meta['python']}, rotación {'activa' if engine.rotation_enabled else 'apagada'}",
+            {"routes_before": routes_before})
+    engine.start()
+    try:
+        fisicos = lambda: [c for c in engine.connections()                          # noqa: E731
+                           if c.usable and c.gateway and c.kind not in (Kind.VPN, Kind.VIRTUAL)]
+        _wait(lambda: len({c.gateway for c in fisicos()}) >= 2, 2 if fast else 20, poll)
+        conns = fisicos()
+        gws = {c.gateway for c in conns}
+        two = len(conns) >= 2 and len(gws) >= 2
+        rep.add("F2", "Dos enlaces con puertas de enlace distintas (IP pública sin verificar)", OK if two else FAIL,
+                f"{len(conns)} enlaces físicos con puerta de enlace, {len(gws)} distintas",
+                [{"name": c.name, "kind": c.kind.value, "gateway": mask_ip(c.gateway), "metric": c.route_metric}
+                 for c in conns])
+        for cid, t in (("F4", "Sesión de navegador abierta"), ("F5", "Tarea larga por el enlace principal"),
+                       ("F8", "Ninguna escritura repetida ni perdida"), ("F9", "Comportamiento de la sesión del navegador")):
+            rep.add(cid, t, SKIP, "necesita un servidor propio que cuente escrituras y sesiones")
+        if not two:
+            rep.add("F3/F6/F7", "Salud, pérdida y recuperación", SKIP, "hacen falta dos enlaces con puertas de enlace distintas")
+            return _finish(rep, engine, out_dir, routes_before, simulate, engines, verify_file)
+        _wait(lambda: all(engine.health.state_of(c.id) != Health.UNKNOWN for c in conns), 2 if fast else 30, poll)
+        if not fast:
+            time.sleep(10)
+        snap = engine.health.snapshot()
+        states = {c.name: {k: snap.get(c.id, {}).get(k) for k in ("state", "avg_latency_ms", "availability_pct")} for c in conns}
+        healthy = [n for n, st in states.items() if st["state"] in ("healthy", "degraded")]
+        rep.add("F3", f"Estado de cada enlace contra {host}:{port}", OK if len(healthy) >= 2 else FAIL,
+                ", ".join(f"{n}: {st['state']} {st['avg_latency_ms']} ms" for n, st in states.items()), states)
+        primary = min(conns, key=lambda c: (c.route_metric if c.route_metric is not None else 1 << 30, c.name))
+        others = [c for c in conns if c.id != primary.id]
+        t_cut = time.time()
+        if simulate:
+            net.set_state(primary.id, "down")
+        else:
+            ask(f"\n>>> DESCONECTA AHORA «{primary.name}» (p. ej. desconecta el Wi‑Fi desde la barra de tareas) y pulsa Enter… ")
+        det = _wait(lambda: engine.health.state_of(primary.id) == Health.DOWN, 5 if fast else 120, poll)
+        otros_ok = [c.name for c in others if engine.health.state_of(c.id) in (Health.HEALTHY, Health.DEGRADED)]
+        rep.add("F6", "Pérdida real detectada (sin tarea que conmutar)", OK if det is not None and otros_ok else FAIL,
+                (f"caída de «{primary.name}» detectada en {det} s; sigue sano: {', '.join(otros_ok) or 'ninguno'}"
+                 if det is not None else "no se detectó la caída"),
+                {"detect_s": det, "still_healthy": otros_ok})
+        if fast:
+            time.sleep(0.3)
+            net.set_state(primary.id, "up")
+        else:
+            time.sleep(20)
+            ask(f"\n>>> RECONECTA «{primary.name}» y pulsa Enter… ")
+        rec = _wait(lambda: engine.health.state_of(primary.id) == Health.HEALTHY, 5 if fast else 240, poll)
+        rep.add("F7", "Recuperación detectada", OK if rec is not None else FAIL,
+                f"recuperado en {rec} s" if rec is not None else "no se recuperó a tiempo",
+                {"recover_s": rec, "outage_s": round(time.time() - t_cut, 1)})
+        return _finish(rep, engine, out_dir, routes_before, simulate, engines, verify_file)
+    finally:
+        engine.shutdown("fin de la validación")
+
+
 def _finish(rep, engine, out_dir, routes_before, simulate, engines, verify_file) -> dict:
     # F10 --------------------------------------------------------------
     audit_path = os.path.join(engine.cfg["data_dir"], "audit.jsonl")
