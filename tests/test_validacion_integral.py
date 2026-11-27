@@ -61,7 +61,7 @@ class ReglasTest(unittest.TestCase):
     def test_fuga_solo_se_juzga_con_datos_suficientes(self):
         with tempfile.TemporaryDirectory() as d:
             it = nuevo(d)
-            it._errores = lambda: {"network_engine": 0, "monitor_trazas": 0}
+            it._errores = lambda: {"network_engine": 0, "monitor_trazas": 0, "ultima_traza": None}
             corta = [{"t": t, "procesos": {"m": {"vivo": True, "ram_mb": 100 + t / 10, "cpu_s": t / 100}}} for t in range(0, 600, 60)]
             r = it._resumen_estabilidad(corta, [], 0, {}, {}, 600)
             self.assertEqual(r["procesos"]["m"]["fuga"], "sin datos suficientes (< 30 min)")
@@ -71,6 +71,24 @@ class ReglasTest(unittest.TestCase):
             self.assertTrue(any("fuga" in p for p in r["problemas"]))
             plana = [{"t": t, "procesos": {"m": {"vivo": True, "ram_mb": 100.0, "cpu_s": 1}}} for t in range(0, 7200, 60)]
             self.assertFalse(it._resumen_estabilidad(plana, [], 0, {}, {}, 7200)["procesos"]["m"]["fuga"])
+
+    def test_solo_cuentan_las_trazas_nuevas_durante_la_supervision(self):
+        with tempfile.TemporaryDirectory() as d:
+            it = nuevo(d)
+            logs = it.lab.d / "datos" / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            traza = "Traceback (most recent call last):\n  File \"x.py\", line 1\nConnectionResetError: [WinError 10054]\n"
+            (logs / "monitor.log").write_text(traza, "utf-8")
+            err0 = it._errores()
+            self.assertEqual(err0["monitor_trazas"], 1)
+            self.assertIn("ConnectionResetError", err0["ultima_traza"])
+            m = [{"t": 0, "procesos": {}}]
+            r = it._resumen_estabilidad(m, [], 0, {}, {}, 60, err0)
+            self.assertFalse(r["problemas"], "una traza de un paso anterior no hace fallar la estabilidad")
+            self.assertEqual(r["errores"]["previos"]["monitor_trazas"], 1, "pero se informa")
+            (logs / "monitor.log").write_text(traza * 2, "utf-8")
+            r = it._resumen_estabilidad(m, [], 0, {}, {}, 60, err0)
+            self.assertTrue(any("durante la supervisión" in p for p in r["problemas"]))
 
     def test_detecta_credenciales_y_mac_en_los_informes(self):
         with tempfile.TemporaryDirectory() as d:

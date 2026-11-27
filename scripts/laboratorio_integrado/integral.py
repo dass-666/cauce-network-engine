@@ -526,6 +526,7 @@ class Integral:
         t0 = time.time()
         prox_corte = t0 + cada if cada else float("inf")
         tam0 = self._tamanos()
+        err0 = self._errores()
         while time.time() - t0 < dur:
             m = {"t": round(time.time() - t0, 1), "procesos": self._procesos()}
             st, c = self.ne("/status/connectivity")
@@ -547,12 +548,15 @@ class Integral:
             if len(muestras) % 20 == 0:
                 L.decir(f"  … {m['t'] / 60:.0f} min, {len(cortes)} cortes simulados")
         tam1 = self._tamanos()
-        resumen = self._resumen_estabilidad(muestras, cortes, errores_http, tam0, tam1, time.time() - t0)
+        resumen = self._resumen_estabilidad(muestras, cortes, errores_http, tam0, tam1, time.time() - t0, err0)
         self.metricas["estabilidad"] = resumen
         (self.dir / "muestras_estabilidad.json").write_text(json.dumps(muestras, ensure_ascii=False), "utf-8")
         problemas = resumen["problemas"]
+        prev = resumen["errores"]["previos"]
+        aviso = (f"; AVISO: {prev['monitor_trazas']} trazas y {prev['network_engine']} errores de NE de pasos anteriores "
+                 f"(última: {resumen['errores'].get('ultima_traza')}); revisar datos/logs") if any(prev.values()) else ""
         return {"estado": FALLA if problemas else PASA, "evidencia": SIMULADA,
-                "detalle": "; ".join(problemas) or resumen["texto"]}
+                "detalle": ("; ".join(problemas) or resumen["texto"]) + aviso}
 
     @staticmethod
     def _pendiente_mb_h(serie: list[tuple[float, float]]) -> Optional[float]:
@@ -563,7 +567,7 @@ class Integral:
         den = sum((x - mx) ** 2 for x, _ in serie)
         return round(sum((x - mx) * (y - my) for x, y in serie) / den * 3600, 2) if den else None
 
-    def _resumen_estabilidad(self, muestras, cortes, errores_http, tam0, tam1, dur) -> dict:
+    def _resumen_estabilidad(self, muestras, cortes, errores_http, tam0, tam1, dur, err0=None) -> dict:
         problemas, procesos = [], {}
         nombres = {n for m in muestras for n in m["procesos"]}
         for n in sorted(nombres):
@@ -592,9 +596,15 @@ class Integral:
             problemas.append(f"{len(cortes) - len(det)} cortes sin detectar o {len(cortes) - len(rec)} sin recuperar a tiempo")
         crecimiento = {k: tam1.get(k, 0) - tam0.get(k, 0) for k in tam1}
         por_hora = {k: round(v / max(dur, 1) * 3600 / 1024, 1) for k, v in crecimiento.items() if v}
-        n_err = self._errores()
+        fin = self._errores()
+        ini = err0 or {}
+        # solo cuenta lo que aparece DURANTE la supervisión; lo anterior (p. ej. al apagar NE en el paso 10) se informa aparte
+        n_err = {k: fin[k] - ini.get(k, 0) for k in ("network_engine", "monitor_trazas")}
+        n_err["previos"] = {k: ini.get(k, 0) for k in ("network_engine", "monitor_trazas")}
+        n_err["ultima_traza"] = fin.get("ultima_traza")
         if n_err["network_engine"] or n_err["monitor_trazas"]:
-            problemas.append(f"errores registrados: {n_err}")
+            problemas.append(f"errores durante la supervisión: NE {n_err['network_engine']}, trazas {n_err['monitor_trazas']}"
+                             + (f" (última: {fin['ultima_traza']})" if fin.get("ultima_traza") else ""))
         if errores_http > max(2, len(muestras) // 20):
             problemas.append(f"{errores_http} consultas sin respuesta")
         texto = (f"{len(muestras)} muestras en {dur / 60:.1f} min; {len(cortes)} cortes simulados, detección media "
@@ -611,10 +621,17 @@ class Integral:
         if audit.exists():
             with open(audit, encoding="utf-8", errors="replace") as fh:
                 ne = sum(1 for ln in fh if '"kind": "error"' in ln)
-        trazas = 0
-        for p in (self.lab.d / "datos" / "logs").glob("*.log"):
-            trazas += p.read_text("utf-8", errors="replace").count("Traceback (most recent call last)")
-        return {"network_engine": ne, "monitor_trazas": trazas}
+        trazas, ultima = 0, None
+        for p in sorted((self.lab.d / "datos" / "logs").glob("*.log")):
+            txt = p.read_text("utf-8", errors="replace")
+            n = txt.count("Traceback (most recent call last)")
+            if n:
+                trazas += n
+                # última línea de la última traza (tipo de excepción), recortada: sirve para diagnosticar sin volcar el registro
+                cola = [ln.strip() for ln in txt.rsplit("Traceback (most recent call last)", 1)[1].splitlines()[1:]
+                        if ln.strip() and not ln.startswith((" ", "\t"))]
+                ultima = f"{p.name}: {(cola[0] if cola else '?')[:160]}"
+        return {"network_engine": ne, "monitor_trazas": trazas, "ultima_traza": ultima}
 
     # ------------------------------------------------------------------ cierre e informe
     def p15_cierre(self) -> dict:
