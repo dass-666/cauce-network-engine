@@ -142,3 +142,12 @@ Cada evento: `{"seq", "ts", "kind", "message", "data", "prev", "hash"}`. Tipos p
 - Salud: al primer éxito de una conexión caída, el sondeo de confirmación se hace al intervalo normal (5 s) y no
   con el retroceso acumulado (hasta 60 s). La histéresis no cambia (2 éxitos). Peor caso de recuperación tras
   reconectar: ~65 s (antes ~120 s); el típico observado en simulación era 54 s.
+- E4: cada conexión de `/status/connectivity` añade `status`, un veredicto único: `ok`, `degraded`, `down` (enlace
+  caído o sin respuesta confirmada, también con el cable puesto) o `unverified` (sin medir o medición vieja).
+- E4: auditoría nueva:
+  - `inventory.reidentified`: el mismo adaptador, por su MAC, aparece con otro identificador, p. ej. un teléfono
+    cambiado de puerto USB.
+  - `system.resume_detected`: el ciclo de fondo estuvo parado más de `max(30, 3 × refresh_s + 10)` s, normalmente
+    por una suspensión. Entonces se vuelve a detectar y a sondear todo.
+  - Una conexión que desaparece libera sus tareas, que conmutan, y su salud deja de figurar.
+  - Los teléfonos Android por USB se reconocen por RNDIS y también por NCM (`UsbNcm Host Device`).

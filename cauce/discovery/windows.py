@@ -54,7 +54,11 @@ _NDIS_MEDIUM = {
 _GUEST_NIC_HINTS = ("hyper-v network adapter", "vmxnet3", "virtio", "red hat virtio", "intel(r) 82574l")
 _VIRTUAL_HINTS = ("hyper-v", "virtualbox", "vmware", "wsl", "docker", "vethernet", "loopback", "kernel debug")
 _VPN_HINTS = ("vpn", "tap-windows", "wireguard", "openvpn", "wintun", "tailscale", "zerotier", "fortinet", "cisco anyconnect")
-_TETHER_HINTS = ("rndis", "remote ndis", "android", "iphone", "apple mobile device ethernet")
+# Teléfono compartiendo datos por USB. Android usa RNDIS ("Remote NDIS based Internet Sharing Device",
+# "SAMSUNG Mobile USB Remote NDIS Network Device") y, en versiones recientes, NCM ("UsbNcm Host Device").
+# El conector (USB-A o USB-C) no cambia lo que ve Windows: el mismo adaptador.
+_TETHER_HINTS = ("rndis", "remote ndis", "android", "iphone", "apple mobile device ethernet", "usbncm", "usb ncm",
+                 "ncm host", "samsung mobile usb")
 _MOBILE_HINTS = ("mobile broadband", "wwan", "lte", "5g", "qualcomm", "sierra wireless", "huawei mobile")
 
 
