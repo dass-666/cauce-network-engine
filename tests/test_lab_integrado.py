@@ -72,7 +72,7 @@ class LabIntegradoTest(unittest.TestCase):
             l = lab.Lab(Path(d) / "l")
             l.estado["pids"] = {"monitor": os.getpid()}            # un PID que NO es Monitor (es esta prueba)
             with mock.patch.object(l, "_cmdline", return_value="python -m unittest"), \
-                    mock.patch("os.killpg") as kill, mock.patch("subprocess.run") as run:
+                    mock.patch("os.killpg", create=True) as kill, mock.patch("subprocess.run") as run:
                 self.assertEqual(l.detener(), {"monitor": "ya no estaba en marcha"})
             kill.assert_not_called()
             run.assert_not_called()
