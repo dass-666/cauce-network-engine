@@ -49,6 +49,13 @@ ENGINES_LAB = {"Monitor": ("127.0.0.1", 8100, "/api/info"), "Forms": ("127.0.0.1
                "Network Engine": ("127.0.0.1", 8880, "/api/v1/ping")}
 
 
+def lab_engines(offset: int = 0) -> dict:
+    """Puertos del laboratorio desplazados (0–500) para poder tener dos laboratorios a la vez sin chocar."""
+    if not 0 <= int(offset) <= 500:
+        raise ValueError("lab-port-offset debe estar entre 0 y 500")
+    return {k: (h, p + int(offset), r) for k, (h, p, r) in ENGINES_LAB.items()}
+
+
 def mask_ip(ip: Optional[str]) -> Optional[str]:
     """El informe no guarda IP completas: basta con ver que cambian de un proveedor a otro."""
     if not ip or ip.count(".") != 3:

@@ -29,6 +29,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.error
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -244,7 +245,7 @@ class Integral:
         """F1–F12 con el simulador (sin red): evidencia SIMULADA de conmutación y escrituras exactamente una vez."""
         out = self.dir / "fieldcheck-simulado"
         r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--lab-url", "http://lab.sim:8770", "--simulate",
-                            "--engines", "lab", "--out", str(out), "--steps", "120"], cwd=str(self.lab.ne),
+                            "--engines", "lab", "--lab-port-offset", str(L.desplazamiento_puertos()), "--out", str(out), "--steps", "120"], cwd=str(self.lab.ne),
                            capture_output=True, text=True, encoding="utf-8", errors="replace", env=L.entorno_limpio({}))
         res = json.loads((out / "fieldcheck.json").read_text("utf-8")) if (out / "fieldcheck.json").exists() else {}
         for c in res.get("checks", []):
@@ -264,7 +265,7 @@ class Integral:
         if len({c.gateway for c in fis}) < 2:
             self.intervenciones.append("Conectar un segundo enlace (teléfono por USB) para F2, F3, F6 y F7.")
             out = self.dir / "fieldcheck-fisico"
-            subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--objetivo", self.objetivo, "--engines", "lab",
+            subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--objetivo", self.objetivo, "--engines", "lab", "--lab-port-offset", str(L.desplazamiento_puertos()),
                             "--out", str(out)], cwd=str(self.lab.ne), env=L.entorno_limpio({}), stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             self._matriz_fieldcheck(out, FISICA)
@@ -296,7 +297,7 @@ class Integral:
         th.start()
         out = self.dir / "fieldcheck-fisico"
         try:
-            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--objetivo", self.objetivo, "--engines", "lab",
+            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--objetivo", self.objetivo, "--engines", "lab", "--lab-port-offset", str(L.desplazamiento_puertos()),
                                 "--out", str(out)], cwd=str(self.lab.ne), env=L.entorno_limpio({}))
         finally:
             time.sleep(20)
@@ -451,8 +452,10 @@ class Integral:
         pids = dict(self.lab.estado.get("pids") or {})
         out: dict[str, dict] = {}
         if L.WINDOWS:
-            ps = ("Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Select-Object ProcessId,ParentProcessId,"
-                  "WorkingSetSize,KernelModeTime,UserModeTime | ConvertTo-Json -Compress")
+            ps = ("$s = @{}; Get-NetTCPConnection -ErrorAction SilentlyContinue | ForEach-Object { $s[[int]$_.OwningProcess]++ }; "
+                  "Get-CimInstance Win32_Process -Filter \"Name like 'python%'\" | Select-Object ProcessId,ParentProcessId,"
+                  "WorkingSetSize,KernelModeTime,UserModeTime,ThreadCount,HandleCount,"
+                  "@{n='Sockets';e={[int]$s[[int]$_.ProcessId]}} | ConvertTo-Json -Compress")
             try:
                 raw = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
                                      text=True, timeout=30, creationflags=0x08000000).stdout.strip()
@@ -474,7 +477,10 @@ class Integral:
                 if arbol:
                     out[nombre] = {"vivo": True, "ram_mb": round(sum(f.get("WorkingSetSize") or 0 for f in arbol) / 2**20, 1),
                                    "cpu_s": round(sum((f.get("KernelModeTime") or 0) + (f.get("UserModeTime") or 0)
-                                                      for f in arbol) / 1e7, 2)}
+                                                      for f in arbol) / 1e7, 2),
+                                   "procesos": len(arbol), "hilos": sum(f.get("ThreadCount") or 0 for f in arbol),
+                                   "handles": sum(f.get("HandleCount") or 0 for f in arbol),
+                                   "sockets": sum(f.get("Sockets") or 0 for f in arbol)}
                 else:
                     out[nombre] = {"vivo": False}
             return out
@@ -485,7 +491,8 @@ class Integral:
                 try:
                     campos = (d / "stat").read_text().rsplit(")", 1)[1].split()
                     rss = int((d / "statm").read_text().split()[1]) * pagina
-                    stats[int(d.name)] = (int(campos[1]), (int(campos[11]) + int(campos[12])) / tick, rss)
+                    hilos = int(campos[17])
+                    stats[int(d.name)] = (int(campos[1]), (int(campos[11]) + int(campos[12])) / tick, rss, hilos, d)
                 except (OSError, IndexError, ValueError):
                     pass
         for nombre, pid in pids.items():
@@ -495,8 +502,20 @@ class Integral:
                 if x in stats:
                     arbol.append(stats[x])
                     pend += [p for p, s in stats.items() if s[0] == x]
+            fds = socks = 0
+            for a in arbol:
+                try:
+                    for f in (a[4] / "fd").iterdir():
+                        fds += 1
+                        try:
+                            socks += os.readlink(f).startswith("socket:")
+                        except OSError:
+                            pass
+                except OSError:
+                    pass
             out[nombre] = ({"vivo": True, "ram_mb": round(sum(a[2] for a in arbol) / 2**20, 1),
-                            "cpu_s": round(sum(a[1] for a in arbol), 2)} if arbol else {"vivo": False})
+                            "cpu_s": round(sum(a[1] for a in arbol), 2), "procesos": len(arbol),
+                            "hilos": sum(a[3] for a in arbol), "handles": fds, "sockets": socks} if arbol else {"vivo": False})
         return out
 
     def _tamanos(self) -> dict[str, int]:
@@ -527,18 +546,34 @@ class Integral:
         prox_corte = t0 + cada if cada else float("inf")
         tam0 = self._tamanos()
         err0 = self._errores()
+        pids0 = dict(self.lab.estado.get("pids") or {})
+        sesion = self._sesion_supervision()
+        parcial = self.dir / "muestras_estabilidad.jsonl"            # se conserva aunque la prueba se interrumpa
         while time.time() - t0 < dur:
-            m = {"t": round(time.time() - t0, 1), "procesos": self._procesos()}
+            m = {"t": round(time.time() - t0, 1), "procesos": self._procesos(), "responde": {}}
             st, c = self.ne("/status/connectivity")
+            m["responde"]["network_engine"] = st == 200
             if st != 200:
                 errores_http += 1
             else:
                 m["latencia_ms"] = {x["id"]: x.get("avg_latency_ms") for x in c.get("connections") or []}
                 m["disponibilidad_pct"] = {x["id"]: x.get("availability_pct") for x in c.get("connections") or []}
-            if not self.lab.red(tok):
+            red = self.lab.red(tok)
+            m["responde"]["monitor"] = bool(red)
+            if not red:
                 errores_http += 1
                 tok = self.lab.monitor_token() or tok
+            if self.lab.estado.get("forms", True) and self.lab.forms.exists():
+                m["responde"]["forms"] = not L.puerto_libre(self.lab.p["forms"]) and self._http_ok(self.lab.p["forms"])
+            if sesion:
+                m["sesion"] = self._latir_sesion(sesion)
+            m["pids_cambiados"] = sorted(k for k, v in (self.lab.estado.get("pids") or {}).items() if pids0.get(k) != v)
             muestras.append(m)
+            try:
+                with open(parcial, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(m, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
             if time.time() >= prox_corte:
                 cortes.append(self._corte_simulado(tok))
                 prox_corte = time.time() + cada
@@ -548,15 +583,69 @@ class Integral:
             if len(muestras) % 20 == 0:
                 L.decir(f"  … {m['t'] / 60:.0f} min, {len(cortes)} cortes simulados")
         tam1 = self._tamanos()
+        if sesion:
+            self._cerrar_sesion(sesion)
         resumen = self._resumen_estabilidad(muestras, cortes, errores_http, tam0, tam1, time.time() - t0, err0)
+        resumen["auditoria_integra_al_final"] = self._auditoria_integra()
         self.metricas["estabilidad"] = resumen
         (self.dir / "muestras_estabilidad.json").write_text(json.dumps(muestras, ensure_ascii=False), "utf-8")
         problemas = resumen["problemas"]
+        if resumen["auditoria_integra_al_final"] is False:
+            problemas.append("la auditoría no está íntegra al terminar la supervisión")
         prev = resumen["errores"]["previos"]
         aviso = (f"; AVISO: {prev['monitor_trazas']} trazas y {prev['network_engine']} errores de NE de pasos anteriores "
                  f"(última: {resumen['errores'].get('ultima_traza')}); revisar datos/logs") if any(prev.values()) else ""
         return {"estado": FALLA if problemas else PASA, "evidencia": SIMULADA,
                 "detalle": ("; ".join(problemas) or resumen["texto"]) + aviso}
+
+    @staticmethod
+    def _http_ok(puerto: int) -> bool:
+        try:
+            with L._OPENER.open(f"http://127.0.0.1:{puerto}/", timeout=5) as r:
+                return r.status < 500
+        except urllib.error.HTTPError as e:
+            return e.code < 500
+        except OSError:
+            return False
+
+    def _sesion_supervision(self) -> Optional[dict]:
+        """Sesión de diagnóstico SIN navegador que late durante la supervisión, para medir su continuidad a lo largo de
+        horas (fases, intervención humana). No envía nada; solo latidos de estado. None si NE no tiene sesiones."""
+        if not (self.lab.ne / "cauce" / "sessions.py").exists():
+            return None
+        st, tok = self.ne("/tokens", "POST", {"name": "lab-supervision", "scope": "session"})
+        if st not in (200, 201) or not isinstance(tok, dict):
+            return None
+        base = f"http://127.0.0.1:{self.lab.p['network_engine']}/api/v1"
+        st, v = L.http(base + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+                                                     "authorized_by_user": True, "heartbeat_timeout_s": 300}, tok["token"])
+        if st != 201:
+            self.ne(f"/tokens/{tok['id']}", "DELETE")
+            return None
+        return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base}
+
+    def _latir_sesion(self, s: dict) -> dict:
+        st, v = L.http(f"{s['base']}/sessions/{s['id']}/heartbeat", "POST", {"status": "ok", "operation": "idle"}, s["token"])
+        if st == 404:                                   # NE se reinició (sesiones en memoria): se registra de nuevo
+            st2, v2 = L.http(s["base"] + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+                                                               "authorized_by_user": True, "heartbeat_timeout_s": 300}, s["token"])
+            if st2 == 201:
+                s["id"] = v2["id"]
+            return {"fase": None, "http": st, "re_registrada": st2 == 201}
+        return {"fase": (v or {}).get("phase"), "estado": (v or {}).get("state"), "http": st,
+                "requiere_persona": (v or {}).get("requires_human")}
+
+    def _cerrar_sesion(self, s: dict) -> None:
+        L.http(f"{s['base']}/sessions/{s['id']}", "DELETE", None, s["token"])
+        self.ne(f"/tokens/{s['token_id']}", "DELETE")
+
+    def _auditoria_integra(self) -> Optional[bool]:
+        p = self.lab.datos("network-engine", "audit.jsonl")
+        if not p.exists():
+            return None
+        r = subprocess.run([sys.executable, "-m", "cauce", "verify-audit", str(p)], cwd=str(self.lab.ne),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=L.entorno_limpio({}))
+        return r.returncode == 0
 
     @staticmethod
     def _pendiente_mb_h(serie: list[tuple[float, float]]) -> Optional[float]:
@@ -584,11 +673,30 @@ class Integral:
                     problemas.append(f"posible fuga de memoria en {n}: {pend} MB/h, +{crec:.0f} %")
             if caidas:
                 problemas.append(f"{n} no estaba vivo en {caidas} muestras")
+            vivos = [m for m in muestras if m["procesos"].get(n, {}).get("vivo")]
+            # CPU por intervalo entre muestras consecutivas (% de un núcleo); el máximo detecta picos
+            cpu_int = [max(0.0, (b["procesos"][n]["cpu_s"] - a["procesos"][n]["cpu_s"]) / (b["t"] - a["t"]) * 100)
+                       for a, b in zip(vivos, vivos[1:]) if b["t"] > a["t"]]
+
+            def serie_de(k):
+                return [m["procesos"][n].get(k) for m in vivos if isinstance(m["procesos"][n].get(k), (int, float))]
+            hilos, socks, procs = serie_de("hilos"), serie_de("sockets"), serie_de("procesos")
             procesos[n] = {"ram_mb_inicio": ram[0] if ram else None, "ram_mb_fin": ram[-1] if ram else None,
+                           "ram_mb_media": round(sum(ram) / len(ram), 1) if ram else None,
                            "ram_mb_max": max(ram) if ram else None, "pendiente_mb_h": pend,
                            "fuga": "sin datos suficientes (< 30 min)" if fuga is None else fuga,
                            "cpu_pct_medio": round((cpu[-1] - cpu[0]) / dur * 100, 2) if len(cpu) > 1 and dur else None,
+                           "cpu_pct_max_intervalo": round(max(cpu_int), 1) if cpu_int else None,
+                           "procesos_max": max(procs) if procs else None,
+                           "hilos_inicio": hilos[0] if hilos else None, "hilos_max": max(hilos) if hilos else None,
+                           "hilos_fin": hilos[-1] if hilos else None,
+                           "sockets_inicio": socks[0] if socks else None, "sockets_max": max(socks) if socks else None,
+                           "sockets_fin": socks[-1] if socks else None,
                            "muestras_sin_proceso": caidas}
+            if dur >= 1800 and len(hilos) > 10 and hilos[-1] > hilos[0] * 2 + 10:
+                problemas.append(f"los hilos de {n} crecen sin parar: {hilos[0]} → {hilos[-1]}")
+            if dur >= 1800 and len(socks) > 10 and socks[-1] > socks[0] * 2 + 20:
+                problemas.append(f"los sockets de {n} crecen sin parar: {socks[0]} → {socks[-1]}")
         lat = [v for m in muestras for v in (m.get("latencia_ms") or {}).values() if isinstance(v, (int, float))]
         det = [c["deteccion_s"] for c in cortes if c["deteccion_s"] is not None]
         rec = [c["recuperacion_s"] for c in cortes if c["recuperacion_s"] is not None]
@@ -607,12 +715,31 @@ class Integral:
                              + (f" (última: {fin['ultima_traza']})" if fin.get("ultima_traza") else ""))
         if errores_http > max(2, len(muestras) // 20):
             problemas.append(f"{errores_http} consultas sin respuesta")
+        disponibilidad = {}
+        for k in ("network_engine", "monitor", "forms"):
+            vals = [m["responde"][k] for m in muestras if k in (m.get("responde") or {})]
+            if vals:
+                disponibilidad[k] = round(sum(vals) / len(vals) * 100, 2)
+        fases: dict[str, int] = {}
+        for m in muestras:
+            f = (m.get("sesion") or {}).get("fase")
+            if f:
+                fases[f] = fases.get(f, 0) + 1
+        sesion_persona = sum(1 for m in muestras if (m.get("sesion") or {}).get("requiere_persona"))
+        if sesion_persona:
+            problemas.append(f"la sesión de supervisión (sin operación en curso) pidió intervención humana en {sesion_persona} muestras")
+        reinicios = sorted({k for m in muestras for k in m.get("pids_cambiados") or []})
+        if reinicios:
+            problemas.append(f"reinicios inesperados de: {', '.join(reinicios)}")
         texto = (f"{len(muestras)} muestras en {dur / 60:.1f} min; {len(cortes)} cortes simulados, detección media "
                  f"{(sum(det) / len(det)) if det else '-'} s, recuperación media {(sum(rec) / len(rec)) if rec else '-'} s; "
                  f"RAM final " + ", ".join(f"{k} {v['ram_mb_fin']} MB" for k, v in procesos.items()))
         return {"duracion_min": round(dur / 60, 1), "muestras": len(muestras), "procesos": procesos,
                 "latencia_ms": {"media": round(sum(lat) / len(lat), 1) if lat else None, "max": max(lat) if lat else None},
                 "cortes": cortes, "registros_kb_por_hora": por_hora, "errores": n_err, "consultas_sin_respuesta": errores_http,
+                "disponibilidad_motores_pct": disponibilidad, "sesion_fases": fases, "reinicios_inesperados": reinicios,
+                "deteccion_s": {"media": round(sum(det) / len(det), 1) if det else None, "max": max(det) if det else None},
+                "recuperacion_s": {"media": round(sum(rec) / len(rec), 1) if rec else None, "max": max(rec) if rec else None},
                 "problemas": problemas, "texto": texto}
 
     def _errores(self) -> dict:
@@ -686,12 +813,20 @@ class Integral:
         if self.metricas.get("estabilidad"):
             e = self.metricas["estabilidad"]
             lin += ["## Estabilidad (red simulada)", "", e["texto"], "",
-                    "| Proceso | RAM inicio MB | RAM fin MB | RAM máx MB | MB/h | Fuga | CPU % |", "|---|---|---|---|---|---|---|"]
+                    "| Proceso | RAM ini/media/máx/fin MB | MB/h | Fuga | CPU % media/máx | Procesos | Hilos ini/máx/fin | Sockets ini/máx/fin |",
+                    "|---|---|---|---|---|---|---|---|"]
             for n, v in e["procesos"].items():
-                lin.append(f"| {n} | {v['ram_mb_inicio']} | {v['ram_mb_fin']} | {v['ram_mb_max']} | {v['pendiente_mb_h']} | "
-                           f"{v['fuga']} | {v['cpu_pct_medio']} |")
-            lin += ["", f"- Latencia media {e['latencia_ms']['media']} ms (máx {e['latencia_ms']['max']}); "
-                    f"registros KB/h: {e['registros_kb_por_hora']}; errores: {e['errores']}", ""]
+                lin.append(f"| {n} | {v['ram_mb_inicio']} / {v.get('ram_mb_media')} / {v['ram_mb_max']} / {v['ram_mb_fin']} | "
+                           f"{v['pendiente_mb_h']} | {v['fuga']} | {v['cpu_pct_medio']} / {v.get('cpu_pct_max_intervalo')} | "
+                           f"{v.get('procesos_max')} | {v.get('hilos_inicio')} / {v.get('hilos_max')} / {v.get('hilos_fin')} | "
+                           f"{v.get('sockets_inicio')} / {v.get('sockets_max')} / {v.get('sockets_fin')} |")
+            lin += ["", f"- Latencia media {e['latencia_ms']['media']} ms (máx {e['latencia_ms']['max']}).",
+                    f"- Cortes simulados: {len(e['cortes'])}; detección {e.get('deteccion_s')} s; recuperación {e.get('recuperacion_s')} s.",
+                    f"- Disponibilidad de los motores (% de muestras con respuesta): {e.get('disponibilidad_motores_pct')}.",
+                    f"- Sesión de supervisión (sin navegador), fases observadas: {e.get('sesion_fases')}.",
+                    f"- Reinicios inesperados: {e.get('reinicios_inesperados') or 'ninguno'}; auditoría íntegra al final: "
+                    f"{e.get('auditoria_integra_al_final')}.",
+                    f"- Registros KB/h: {e['registros_kb_por_hora']}; errores: {e['errores']}", ""]
         if self.intervenciones:
             lin += ["## Lo que falta hacer en persona", ""] + [f"- {x}" for x in dict.fromkeys(self.intervenciones)] + [""]
         f = self.dir / "INFORME_VALIDACION_INTEGRAL.md"
