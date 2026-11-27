@@ -1,7 +1,7 @@
 {
   "_nota": "Combinación compatible para el laboratorio integrado. Network Engine es la carpeta desde la que se ejecuta este paquete (su commit se anota en el informe). Monitor y Forms se descargan en estos commits exactos.",
   "network_engine": {"version": "0.2.0.dev0", "rama": "claude/consolidacion-integracion"},
-  "monitor": {"repo": "dass-666/cauce-monitor-engine", "commit": "a0d7e1df37318769b536789bedf6bf30a5229892",
+  "monitor": {"repo": "dass-666/cauce-monitor-engine", "commit": "29044b7625ba1bfa0782098a7a27b50fd4dcc402",
               "rama": "claude/project-thread-so1hjy", "version": "2.2.2-dev"},
   "forms": {"repo": "dass-666/CAUCE-UNIVERSAL-CONEXION", "commit": "aa1bb0295b32c17ba0435490678adf1ee54c55a0",
             "rama": "main", "version": "0.1.0"},
