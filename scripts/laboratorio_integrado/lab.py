@@ -358,14 +358,17 @@ class Lab:
 
     def _cmdline(self, pid: int) -> str:
         if WINDOWS:
-            r = subprocess.run(["wmic", "process", "where", f"ProcessId={pid}", "get", "CommandLine"],
-                               capture_output=True, text=True)
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout
-            r = subprocess.run(["powershell", "-NoProfile", "-Command",
-                                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CommandLine"],
-                               capture_output=True, text=True)
-            return r.stdout
+            # wmic ya no viene en Windows 11 24H2 ni en Windows Server 2025: primero PowerShell (CIM), wmic solo de respaldo
+            for orden in (["powershell", "-NoProfile", "-Command",
+                           f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"],
+                          ["wmic", "process", "where", f"ProcessId={int(pid)}", "get", "CommandLine"]):
+                try:
+                    r = subprocess.run(orden, capture_output=True, text=True, timeout=30)
+                except (OSError, subprocess.SubprocessError):
+                    continue
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout
+            return ""
         try:
             return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
         except OSError:
