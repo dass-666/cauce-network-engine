@@ -36,6 +36,7 @@ from typing import Any, Callable, Optional
 import lab as L
 
 PASA, FALLA, PENDIENTE, OMITIDA, INFO = "PASA", "FALLA", "PENDIENTE", "OMITIDA", "INFO"
+CANCELADA = "CANCELADA"   # E5: la persona canceló; nunca cuenta como aprobado
 FISICA, LOCAL, SIMULADA = "FÍSICA", "LOCAL", "SIMULADA"
 PERFILES = {
     "rapido": {"desc": "comprobación básica", "estabilidad_s": 60, "corte_cada_s": 0, "fisica": False, "caliente": False},
@@ -794,7 +795,7 @@ class Integral:
                 "detalle": "; ".join(hallazgos) or "informes sin contraseñas, tokens ni MAC (IP enmascaradas)"}
 
     def escribir(self) -> Path:
-        cuenta = {e: sum(1 for p in self.pasos if p["estado"] == e) for e in (PASA, FALLA, PENDIENTE, OMITIDA, INFO)}
+        cuenta = {e: sum(1 for p in self.pasos if p["estado"] == e) for e in (PASA, FALLA, PENDIENTE, OMITIDA, INFO, CANCELADA)}
         filas = [f"| {p['id']} | {p['titulo']} | **{p['estado']}** | {p['evidencia']} | {p['s']} | "
                  f"{str(p.get('detalle', '')).replace('|', '/')[:300]} |" for p in self.pasos]
         todos = [f"F{i}" for i in range(1, 13)]
@@ -805,7 +806,8 @@ class Integral:
                f"- Perfil: **{self.perfil}** ({self.cfg['desc']}) · interactivo: {'sí' if self.interactivo else 'no'} · "
                f"inicio {dt.datetime.fromtimestamp(self.inicio):%Y-%m-%d %H:%M} · duración {(time.time() - self.inicio) / 60:.1f} min",
                f"- Commits: {json.dumps(self.lab.estado.get('commits') or {}, ensure_ascii=False)}",
-               f"- Resultado: {cuenta[PASA]} PASA · {cuenta[FALLA]} FALLA · {cuenta[PENDIENTE]} PENDIENTE · {cuenta[OMITIDA]} OMITIDA",
+               f"- Resultado: {cuenta[PASA]} PASA · {cuenta[FALLA]} FALLA · {cuenta[PENDIENTE]} PENDIENTE · {cuenta[OMITIDA]} OMITIDA"
+               + (f" · {cuenta[CANCELADA]} CANCELADA (informe parcial)" if cuenta[CANCELADA] else ""),
                "- PENDIENTE = falta un requisito físico o un destino autorizado: **no cuenta como aprobado**.",
                "- Evidencia: FÍSICA (Windows real, enlaces reales) · LOCAL (en el equipo, sin cortar la red) · SIMULADA.", "",
                "| Paso | Prueba | Estado | Evidencia | s | Detalle |", "|---|---|---|---|---|---|", *filas, "",
@@ -858,13 +860,34 @@ class Integral:
                  ("14", "Estabilidad y recursos", self.p14_estabilidad),
                  ("15", "Cierre seguro del laboratorio", self.p15_cierre),
                  ("16", "Informes sin datos sensibles", self.p16_datos_sensibles)]
-        for pid, titulo, fn in pasos:
+        cancelada = False
+        for i, (pid, titulo, fn) in enumerate(pasos):
+            if cancelada:
+                break
             if pid in ("07", "08a", "08b", "09", "09b", "10", "11", "13", "14") and L.puerto_libre(self.lab.p["network_engine"]) \
                     and not any(p["id"] == "04" and p["estado"] == PASA for p in self.pasos):
                 self.pasos.append({"id": pid, "titulo": titulo, "estado": OMITIDA, "evidencia": LOCAL, "s": 0,
                                    "detalle": "los motores no arrancaron (paso 04)"})
                 continue
-            self.paso(pid, titulo, fn)
+            try:
+                self.paso(pid, titulo, fn)
+            except KeyboardInterrupt:
+                # E5: cancelación segura. Lo hecho queda en el informe; lo que falta, CANCELADA (nunca aprobado);
+                # se detienen solo los procesos del laboratorio.
+                cancelada = True
+                L.decir(f"\nCancelado por la persona durante [{pid}]. Se cierra el laboratorio y se guarda el informe parcial.")
+                for pid2, titulo2, _ in pasos[i:]:
+                    if pid2 != "15":
+                        self.pasos.append({"id": pid2, "titulo": titulo2, "estado": CANCELADA, "evidencia": LOCAL, "s": 0,
+                                           "detalle": "cancelada antes de terminar"})
+                try:
+                    self.paso("15", "Cierre seguro del laboratorio", self.p15_cierre)
+                except KeyboardInterrupt:
+                    self.lab.detener()
+        if cancelada:
+            f = self.escribir()
+            L.decir(f"\nInforme PARCIAL: {f}")
+            return 130
         # F11 y F12 locales: los tres motores a la vez y rutas sin tocar (si no hubo guion físico)
         if any(p["id"] == "04" and p["estado"] == PASA for p in self.pasos):
             self.mf("F11", "Aprobado físicamente" if L.WINDOWS else "Aprobado en simulación",
@@ -887,7 +910,14 @@ def main(argv=None) -> int:
     lab = L.Lab(Path(a.dir))
     L.validar_carpeta(lab.d, crear=False)
     interactivo = not a.no_interactivo and os.environ.get("CAUCE_LAB_SIN_PAUSA") != "1" and sys.stdin.isatty()
-    return Integral(lab, a.perfil, interactivo, a.objetivo, a.duracion).ejecutar()
+    try:
+        with L.Bloqueo(lab.d, f"integral {a.perfil}"):
+            it = Integral(lab, a.perfil, interactivo, a.objetivo, a.duracion)
+            L.registrar_en(it.dir / "registro_detallado.log")     # p16 también lo revisa
+            return it.ejecutar()
+    except L.Ocupado as e:
+        L.decir(str(e))
+        return 4
 
 
 if __name__ == "__main__":

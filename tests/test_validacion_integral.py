@@ -117,7 +117,9 @@ class ReglasTest(unittest.TestCase):
             lab.validar_carpeta(lb.d, crear=True)
             self.assertEqual(lb.desactualizado(), ["sin instalar"])
             (lb.ne / "cauce").mkdir(parents=True)
-            lb.estado.update({"commits": {"network_engine": "sin git", "monitor": lab.VERSIONES["monitor"]["commit"],
+            lb.monitor.mkdir()
+            lb.forms.mkdir()
+            lb.estado.update({"instalado": lab.ahora(), "commits": {"network_engine": "sin git", "monitor": lab.VERSIONES["monitor"]["commit"],
                                           "forms": lab.VERSIONES["forms"]["commit"]}, "forms": True})
             lb.guardar()
             self.assertEqual(lb.desactualizado(), [])
@@ -125,6 +127,92 @@ class ReglasTest(unittest.TestCase):
             lb.guardar()
             self.assertTrue(any("monitor" in m for m in lb.desactualizado()))
             self.assertEqual(lab.main(["--dir", str(lb.d), "al-dia"]), 3)
+            lb.estado["commits"]["monitor"] = lab.VERSIONES["monitor"]["commit"]
+            lb.estado["instalacion_en_curso"] = lab.ahora()      # E5: una instalación cortada a medias
+            lb.guardar()
+            self.assertIn("una instalación anterior no terminó", lb.desactualizado())
+
+
+class RobustezLanzadorTest(unittest.TestCase):
+    """E5: comprobación previa, bloqueo, restauración tras una actualización fallida y cancelación segura."""
+
+    def test_bloqueo_impide_dos_ejecuciones_y_se_libera(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            with lab.Bloqueo(d, "primera"):
+                with self.assertRaises(lab.Ocupado):
+                    with lab.Bloqueo(d, "segunda"):
+                        pass
+            self.assertFalse((d / ".en_uso").exists())
+            with lab.Bloqueo(d, "tercera"):
+                pass
+
+    def test_bloqueo_huerfano_se_sustituye(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / ".en_uso").write_text('{"pid": 999999999, "quien": "cortada"}', "utf-8")
+            with lab.Bloqueo(d, "nueva"):
+                self.assertIn('"nueva"', (d / ".en_uso").read_text("utf-8"))
+
+    def test_actualizacion_fallida_restaura_la_anterior(self):
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            for x in (lb.ne, lb.monitor, lb.forms):
+                x.mkdir()
+                (x / "VIEJO").write_text("v", "utf-8")
+            lb.estado.update({"instalado": "antes", "commits": {"monitor": "viejo"}, "monitor_admin": "x"})
+            lb.guardar()
+
+            def revienta(*a, **kw):
+                (lb.monitor).mkdir(exist_ok=True)
+                (lb.monitor / "A_MEDIAS").write_text("x", "utf-8")
+                raise OSError("sin internet (simulado)")
+            lb._instalar = revienta
+            with self.assertRaises(OSError):
+                lb.instalar(True, False, False, {})
+            self.assertTrue((lb.monitor / "VIEJO").exists())
+            self.assertFalse((lb.monitor / "A_MEDIAS").exists())
+            self.assertEqual(lab.Lab(lb.d).estado.get("commits"), {"monitor": "viejo"})
+            self.assertFalse((lb.d / ".anterior").exists())
+
+    def test_previo_detecta_puerto_ajeno_y_no_toca_nada(self):
+        import socket
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            s = socket.socket()
+            s.bind(("127.0.0.1", lb.p["network_engine"]))
+            s.listen(1)
+            try:
+                r = lb.previo()
+            finally:
+                s.close()
+            puertos = next(x for x in r["detalle"] if x["nombre"] == "puertos del laboratorio")
+            self.assertFalse(r["ok"])
+            self.assertTrue(puertos["bloqueante"])
+            self.assertIn(str(lb.p["network_engine"]), puertos["detalle"])
+
+    def test_previo_sin_problemas(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = lab.Lab(Path(d) / "l").previo()
+            self.assertTrue(r["ok"], r)
+            self.assertTrue(r["reinstalar"])
+
+    def test_cancelacion_deja_informe_parcial_y_nada_aprobado(self):
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            it = I.Integral(lb, "rapido", False, "github.com:443", None)
+            def corta():
+                raise KeyboardInterrupt
+            it.p01_versiones = corta
+            it.p15_cierre = lambda: {"estado": I.PASA, "detalle": "cerrado"}
+            self.assertEqual(it.ejecutar(), 130)
+            estados = {p["id"]: p["estado"] for p in it.pasos}
+            self.assertEqual(estados["01"], I.CANCELADA)
+            self.assertEqual(estados["15"], I.PASA)
+            self.assertNotIn(I.PASA, [v for k, v in estados.items() if k != "15"])
+            self.assertTrue((it.dir / "INFORME_VALIDACION_INTEGRAL.md").exists())
 
 
 if __name__ == "__main__":

@@ -52,6 +52,18 @@ class FasesTest(SessionApiBase):
         self.assertIn("session.requires_human", kinds)
         self.assertIn("session.human_resolved", kinds)
 
+    def test_operacion_empezada_con_la_red_ya_caida_pide_persona(self):
+        """E5 (capturas): antes solo se marcaba si el corte llegaba DURANTE la operación."""
+        self.a.register("forms-a", connection_id="sim-a", heartbeat_timeout_s=10)
+        self.clock.advance(1)
+        self.a.heartbeat(True, operation="idle")
+        self.fail_link("sim-a")
+        self.assertFalse(self.fase()["requires_human"])
+        self.clock.advance(1)
+        self.a.heartbeat(True, operation="in_progress")
+        f = self.fase()
+        self.assertEqual((f["requires_human"], f["human_reason"]), (True, "operation_interrupted"))
+
     def test_sin_operacion_en_curso_un_corte_no_pide_persona(self):
         self.a.register("forms-a", connection_id="sim-a", heartbeat_timeout_s=10)
         self.clock.advance(1)

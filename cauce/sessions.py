@@ -395,16 +395,18 @@ class SessionRegistry:
                 s = self._sessions.get(sid)
                 if s is None:
                     continue
-                if new in INTERRUPTED and s.operation == "in_progress" and not s.requires_human:
-                    # Una operación a medias (p. ej. un envío) quedó con resultado desconocido: NO se repite sola.
-                    s.requires_human, s.human_reason = True, "operation_interrupted"
-                    flagged.append((sid, label, s.human_reason))
-                elif new == "browser_error" and reason in HUMAN_ERROR_CODES and not s.requires_human:
+                if new == "browser_error" and reason in HUMAN_ERROR_CODES and not s.requires_human:
                     s.requires_human, s.human_reason = True, reason
                     flagged.append((sid, label, reason))
                 if new == "active" and old in INTERRUPTED + ("network_unknown",):
                     s.recovered_from, s.recovered_at = old, now
                     recovered.append((sid, label, old))
+            # Una operación en curso con la sesión interrumpida (porque se cortó durante la operación o porque la
+            # persona la empezó ya cortada; hallazgo de E5 con las capturas) tiene resultado desconocido: NO se repite.
+            for s in self._sessions.values():
+                if s.state in INTERRUPTED and s.operation == "in_progress" and not s.requires_human:
+                    s.requires_human, s.human_reason = True, "operation_interrupted"
+                    flagged.append((s.id, s.label, s.human_reason))
         for sid, label, old, new, reason in changes:
             self.audit.record("session.state", f"Sesión {label}: {old} -> {new}",
                               session_id=sid, old=old, new=new, reason=reason)
