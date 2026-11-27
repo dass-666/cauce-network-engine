@@ -154,6 +154,32 @@ class RobustezLanzadorTest(unittest.TestCase):
             with lab.Bloqueo(d, "nueva"):
                 self.assertIn('"nueva"', (d / ".en_uso").read_text("utf-8"))
 
+    def test_apagado_brusco_durante_la_instalacion_no_pierde_la_anterior(self):
+        """E6: si el equipo se apaga (o se mata el proceso) mientras se instala, queda .anterior con la instalación
+        buena. La siguiente instalación no debe borrarla: si también falla (p. ej. sin internet), se restaura."""
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            anterior = lb.d / ".anterior"
+            anterior.mkdir()
+            for x in (lb.ne, lb.monitor, lb.forms):
+                (anterior / x.name).mkdir()
+                (anterior / x.name / "BUENA").write_text("v", "utf-8")
+            (anterior / lb.estado_f.name).write_text(json.dumps({"instalado": "antes", "monitor_admin": "x"}), "utf-8")
+            lb.monitor.mkdir()
+            (lb.monitor / "A_MEDIAS").write_text("x", "utf-8")              # lo que dejó la instalación cortada
+            lb.estado = {"instalacion_en_curso": "antes", "monitor_admin": "x"}
+            lb.guardar()
+
+            def sin_internet(*a, **kw):
+                raise OSError("sin internet (simulado)")
+            lb._instalar = sin_internet
+            with self.assertRaises(OSError):
+                lb.instalar(True, False, False, {})
+            self.assertTrue((lb.monitor / "BUENA").exists(), "la instalación buena anterior debe volver")
+            self.assertFalse((lb.monitor / "A_MEDIAS").exists())
+            self.assertEqual(json.loads(lb.estado_f.read_text("utf-8")).get("instalado"), "antes")
+
     def test_actualizacion_fallida_restaura_la_anterior(self):
         with tempfile.TemporaryDirectory() as d:
             lb = lab.Lab(Path(d) / "l")

@@ -287,7 +287,12 @@ class Lab:
     def instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
         """E5: si ya había una instalación, se aparta en .anterior y se restaura si la nueva falla a medias."""
         anterior = self.d / ".anterior"
-        if anterior.exists():
+        if anterior.exists() and self.estado.get("instalacion_en_curso") and any(anterior.iterdir()):
+            # E6: una instalación anterior se cortó de golpe (apagado, proceso matado) y dejó aquí la buena:
+            # se devuelve a su sitio ANTES de empezar, para no perderla si esta también falla.
+            self._restaurar_anterior(anterior)
+            decir("  Se encontró una instalación cortada: se recuperó la anterior antes de reinstalar.")
+        elif anterior.exists():
             shutil.rmtree(anterior, ignore_errors=True)
         partes = [x for x in (self.ne, self.monitor, self.forms, self.estado_f) if x.exists()]
         estado_previo = dict(self.estado)
@@ -305,20 +310,23 @@ class Lab:
         except BaseException as e:
             decir(f"La instalación falló: {type(e).__name__}: {e}")
             if anterior.exists():
-                for x in (self.ne, self.monitor, self.forms, self.estado_f):
-                    if x.is_dir():
-                        shutil.rmtree(x, ignore_errors=True)
-                    elif x.exists():
-                        x.unlink()
-                for x in anterior.iterdir():
-                    x.rename(self.d / x.name)
-                anterior.rmdir()
-                self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
+                self._restaurar_anterior(anterior)
                 decir("  Se restauró la instalación anterior: el laboratorio queda como estaba.")
             raise
         if anterior.exists():
             shutil.rmtree(anterior, ignore_errors=True)
         return r
+
+    def _restaurar_anterior(self, anterior: Path) -> None:
+        for x in (self.ne, self.monitor, self.forms, self.estado_f):   # lo instalado a medias se quita entero
+            if x.is_dir():
+                shutil.rmtree(x, ignore_errors=True)
+            elif x.exists():
+                x.unlink()
+        for x in anterior.iterdir():
+            x.rename(self.d / x.name)
+        shutil.rmtree(anterior, ignore_errors=True)
+        self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
 
     def _instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
         decir(f"Instalando el laboratorio en {self.d}")
