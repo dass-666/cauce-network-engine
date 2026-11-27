@@ -438,6 +438,8 @@ class CauceAPI:
             body: dict = {}
             if method in ("POST", "DELETE"):
                 n = int(h.headers.get("Content-Length") or 0)
+                if n < 0:   # E7: rfile.read(-1) esperaría hasta que el cliente cerrara, ocupando el hilo
+                    return self._error(h, 400, "invalid_request", "Content-Length negativo")
                 if n > MAX_BODY:
                     return self._error(h, 413, "too_large", "Cuerpo demasiado grande")
                 if n:
@@ -477,7 +479,8 @@ class CauceAPI:
         except (ValueError, TypeError) as e:
             self._error(h, 400, "invalid_request", str(e))
         except Exception as e:
-            self.engine.audit.record("error", f"Error interno de API: {e!r}", path=h.path)
+            self.engine.audit.record("error", f"Error interno de API: {e!r}"[:500],
+                                     path=urlsplit(getattr(h, "path", "")).path)   # E7: sin valores de la consulta
             self._error(h, 500, "internal_error", "Error interno; ver registro de errores")
 
     # ------------------------------------------------------------------

@@ -49,13 +49,23 @@ class SessionStore:
         self.path = path
         self.bak = path + ".bak"
         self._lock = threading.Lock()          # dentro de un proceso, una escritura cada vez
+        self._written_seq = 0
 
     # ------------------------------------------------------------------ escritura
-    def save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: Optional[list[dict]] = None) -> None:
+    def save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: Optional[list[dict]] = None,
+             seq: Optional[int] = None) -> bool:
         """Lanza OSError si no se pudo escribir (el llamador lo anota; el motor sigue funcionando).
-        ``pending``: marcas de intervención humana sin resolver de sesiones ya cerradas (E6)."""
+        ``pending``: marcas de intervención humana sin resolver de sesiones ya cerradas (E6).
+        ``seq``: número de foto creciente; una foto más vieja que la última escrita se descarta (E7). False si se
+        descartó."""
         with self._lock:
+            if seq is not None:
+                if seq <= self._written_seq:
+                    return False
             self._save(sessions, closed, saved_at, pending or [])
+            if seq is not None:
+                self._written_seq = seq
+            return True
 
     def _save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: list[dict]) -> None:
         body = {"schema": SCHEMA, "saved_at": saved_at, "sessions": sessions, "closed": closed, "pending": pending}

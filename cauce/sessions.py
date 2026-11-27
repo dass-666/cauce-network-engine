@@ -135,6 +135,7 @@ class SessionRegistry:
         self._last_save = 0.0
         self._dirty = False
         self._write_failed = False
+        self._seq = 0                      # número de la última foto tomada para guardar (E7)
         if store is not None:
             self._restore()
 
@@ -158,8 +159,12 @@ class SessionRegistry:
             closed = list(self._closed)
             pending = [dict(p) for p in self._pending]
             self._dirty, self._last_save = False, now
+            # E7: número de foto. El almacén descarta una foto más vieja que la última escrita (dos hilos guardando
+            # a la vez podían dejar en disco la foto anterior a «en curso»).
+            self._seq += 1
+            seq = self._seq
         try:
-            self.store.save(sessions, closed, now, pending)
+            self.store.save(sessions, closed, now, pending, seq=seq)
             if self._write_failed:
                 self._write_failed = False
                 self.audit.record("session.state_saved", "Estado de sesiones guardado de nuevo tras un fallo")
@@ -279,7 +284,18 @@ class SessionRegistry:
         inherited, replaced = None, None
         with self._lock:
             prev = next((x for x in self._sessions.values() if x.owner_token_id == owner_token_id), None)
-            if prev is not None and prev.restored:
+            sustituible = prev is not None and prev.restored
+            # E7: TODAS las comprobaciones van antes de tocar la sesión restaurada. Antes se borraba primero y un 409
+            # posterior (p. ej. etiqueta en uso) se llevaba la sesión y su marca de intervención humana.
+            otras = [x for x in self._sessions.values() if not (sustituible and x is prev)]
+            if any(x.owner_token_id == owner_token_id for x in otras):
+                raise SessionError(409, "credential_has_session",
+                                   "Esta credencial ya tiene una sesión activa (una credencial = una sesión)")
+            if any(x.label == label for x in otras):
+                raise SessionError(409, "label_in_use", "Ya existe una sesión con esa etiqueta")
+            if len(otras) >= self.max_sessions:
+                raise SessionError(409, "too_many_sessions", f"Máximo {self.max_sessions} sesiones")
+            if sustituible:
                 # El dueño perdió su id al reiniciarse él también: la sesión restaurada se sustituye, pero su
                 # marca de intervención humana PASA a la nueva (un nuevo registro nunca la borra).
                 del self._sessions[prev.id]
@@ -288,13 +304,6 @@ class SessionRegistry:
                 replaced = prev
                 if prev.requires_human:
                     inherited = (prev.human_reason, prev.operation)
-            if any(s.owner_token_id == owner_token_id for s in self._sessions.values()):
-                raise SessionError(409, "credential_has_session",
-                                   "Esta credencial ya tiene una sesión activa (una credencial = una sesión)")
-            if any(s.label == label for s in self._sessions.values()):
-                raise SessionError(409, "label_in_use", "Ya existe una sesión con esa etiqueta")
-            if len(self._sessions) >= self.max_sessions:
-                raise SessionError(409, "too_many_sessions", f"Máximo {self.max_sessions} sesiones")
             s = BrowserSession(id="bs_" + secrets.token_hex(6), label=label, owner_token_id=owner_token_id,
                                owner_name=owner_name, connection_id=cid, heartbeat_timeout_s=timeout,
                                registered_at=now, state_since=now)
