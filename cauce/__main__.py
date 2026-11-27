@@ -167,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("labserver")
     p.add_argument("--port", type=int, default=8770)
     p.add_argument("--host", default="127.0.0.1",
-                   help="Dirección de escucha. 0.0.0.0 solo en TU servidor de laboratorio, nunca en el equipo de trabajo")
+                   help="Dirección IP de escucha. Nunca pública; fuera de 127.0.0.1 exige --clave-archivo")
+    p.add_argument("--clave-archivo", help="Archivo con la clave del servidor privado (se crea con una clave nueva si no existe)")
     p = sub.add_parser("token")
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
@@ -270,9 +271,27 @@ def main(argv: list[str] | None = None) -> int:
             print("Sin routers configurados (clave \"routers\" en config.json; solo transporte simulado).")
         return 0
     if a.cmd == "labserver":
-        from .labserver import LabServer
-        srv = LabServer(host=a.host, port=a.port).start()
-        print(f"Servidor de laboratorio en http://{a.host}:{srv.port} (Ctrl+C para cerrar)")
+        from .labserver import LabServer, LabServerError
+        clave = None
+        if a.clave_archivo:
+            import secrets as _secrets
+            if not os.path.exists(a.clave_archivo):
+                fd = os.open(a.clave_archivo, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    fh.write(_secrets.token_urlsafe(24))
+            with open(a.clave_archivo, encoding="utf-8") as fh:
+                clave = fh.read().strip()
+        try:
+            srv = LabServer(host=a.host, port=a.port, clave=clave).start()
+        except LabServerError as e:
+            print(f"No se arranca: {e}", file=sys.stderr)
+            return 2
+        donde = "<IP-de-este-equipo>" if a.host == "0.0.0.0" else a.host
+        print(f"Servidor de validación en http://{donde}:{srv.port}{'/<clave>' if clave else ''} (Ctrl+C para cerrar)")
+        if clave:
+            print(f"La clave está en {a.clave_archivo}. No la pegues en chats ni la subas a ningún sitio.")
+        if a.host == "0.0.0.0":
+            print("AVISO: escucha en todas las interfaces de ESTE equipo. No abras ni redirijas el puerto en el router.")
         try:
             while True:
                 time.sleep(1)

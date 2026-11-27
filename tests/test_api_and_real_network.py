@@ -90,11 +90,11 @@ class RealNetworkTest(unittest.TestCase):
         eng.refresh()
         t2 = eng.start_task({"name": "real2", "owner": "o", "steps": [{"url": self.url("/ok")}] * 2}, run_async=False)
         self.assertEqual(t2.state, TaskState.COMPLETED, t2.reason)
-        n_before = len(self.lab.requests)
+        n_before = self.lab.requests_total
         t3 = eng.start_task({"name": "lim", "owner": "o", "connection_id": "a",
                              "steps": [{"url": self.url("/limit")}, {"url": self.url("/ok")}]}, run_async=False)
         self.assertEqual(t3.state, TaskState.THROTTLED)
-        self.assertEqual(len(self.lab.requests) - n_before, 1, "una sola petición; no se reintentó por otra conexión")
+        self.assertEqual(self.lab.requests_total - n_before, 1, "una sola petición; no se reintentó por otra conexión")
 
 
     @unittest.skipUnless(MULTI_LOOPBACK, "requiere 127.0.0.2 (Linux)")

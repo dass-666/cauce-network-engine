@@ -14,24 +14,62 @@ Rutas:
   GET  /beat?sid=X&n=N       latido de esa página (lo envía el propio navegador)
   GET  /session-report?sid=X latidos recibidos, huecos y la IP de origen de cada tramo
 
-El servidor es PROPIO: arráncalo en un equipo tuyo. Por defecto solo escucha en 127.0.0.1; para que lo
-alcance el equipo de pruebas desde internet hay que pasar ``--host 0.0.0.0`` a propósito.
+El servidor es PROPIO: arráncalo en un equipo tuyo. Por defecto solo escucha en 127.0.0.1.
+
+E5, servidor de validación privado:
+- Fuera de 127.0.0.1 exige una CLAVE (``clave``): todas las rutas cuelgan de ``/<clave>/…`` y sin ella la respuesta es
+  404 sin contar nada (URL de capacidad; comparación en tiempo constante). Se rechaza escuchar en una dirección
+  pública (``is_global``): solo loopback, red local privada, CGNAT/Tailscale o 0.0.0.0 detrás de NAT.
+- Registros mínimos y acotados, solo en memoria: método y ruta sin consulta (la clave nunca se guarda), sin cuerpo.
+- Datos ficticios: solo cuenta escrituras por clave de idempotencia; no guarda cuerpos.
 """
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import json
 import threading
 import time
+from collections import deque
 from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+MAX_REQUESTS_KEPT = 2000
+MAX_WRITE_KEYS = 10000
+MAX_SESSIONS = 20
+MAX_BEATS_PER_SESSION = 200000      # 8 h a un latido por segundo = 28 800
+
+
+class LabServerError(ValueError):
+    pass
+
+
+def check_bind(host: str, clave: str | None) -> None:
+    """Política de escucha: nunca en una dirección pública; fuera de loopback, con clave."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise LabServerError("--host debe ser una dirección IP (no un nombre)") from None
+    if ip.is_loopback:
+        return
+    if ip.is_global:
+        raise LabServerError(f"{host} es una dirección pública: el servidor de validación es privado")
+    if not clave or len(clave) < 20:
+        raise LabServerError("Fuera de 127.0.0.1 hace falta una clave de al menos 20 caracteres (--clave-archivo)")
+
+
 class LabServer:
-    def __init__(self, host: str = "127.0.0.1", port: int = 8770, clock=time.time):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8770, clock=time.time, clave: str | None = None):
+        check_bind(host, clave)
+        self.clave = clave
+        self._prefix = f"/{clave}" if clave else ""
         self.writes: dict[str, int] = {}
         self.beats: dict[str, list[tuple[float, int, str]]] = {}     # sid -> [(ts, n, ip)]
         self.clock = clock
-        self.requests: list[dict] = []
+        self.requests: deque = deque(maxlen=MAX_REQUESTS_KEPT)
+        self.requests_total = 0
+        self.rejected = 0
         lab = self
 
         class H(BaseHTTPRequestHandler):
@@ -50,9 +88,32 @@ class LabServer:
                 self.wfile.write(data)
 
             def _log(self):
-                lab.requests.append({"method": self.command, "path": self.path, "client_ip": self.client_address[0]})
+                lab.requests_total += 1
+                lab.requests.append({"method": self.command, "path": urlsplit(self.path).path,
+                                     "client_ip": self.client_address[0]})
+
+            def _autorizar(self) -> bool:
+                """Quita el prefijo /<clave>. Sin clave correcta: 404 y no se cuenta nada."""
+                if not lab._prefix:
+                    return True
+                raw = self.path
+                pre = raw[:len(lab._prefix)]
+                rest = raw[len(lab._prefix):]
+                if hmac.compare_digest(pre.encode(), lab._prefix.encode()) and (rest == "" or rest[0] in "/?"):
+                    self.path = rest if rest.startswith("/") else "/" + rest
+                    return True
+                lab.rejected += 1
+                data = b'{"error":"not found"}'
+                self.send_response(404)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return False
 
             def do_GET(self):
+                if not self._autorizar():
+                    return
                 self._log()
                 if self.path.startswith("/limit"):
                     return self._reply(429, {"error": "rate limited"}, {"Retry-After": "60"})
@@ -84,23 +145,31 @@ class LabServer:
                     except ValueError:
                         n = -1
                     with lab._lock:
-                        lab.beats.setdefault(sid, []).append((lab.clock(), n, self.client_address[0]))
+                        if sid in lab.beats or len(lab.beats) < MAX_SESSIONS:
+                            b = lab.beats.setdefault(sid, [])
+                            if len(b) < MAX_BEATS_PER_SESSION:
+                                b.append((lab.clock(), n, self.client_address[0]))
                     return self._reply(200, {"ok": True})
                 if u.path == "/session-report" and sid:
                     return self._reply(200, lab.session_report(sid))
                 return self._reply(200, {"ok": True, "observed_ip": self.client_address[0]})
 
             def do_POST(self):
+                if not self._autorizar():
+                    return
                 self._log()
                 n = int(self.headers.get("Content-Length") or 0)
                 if n:
                     self.rfile.read(n)
                 op = parse_qs(urlsplit(self.path).query).get("op", [None])[0]
-                key = self.headers.get("Idempotency-Key") or (f"op-{op[:60]}" if op else f"anon-{len(lab.requests)}")
-                lab.writes[key] = lab.writes.get(key, 0) + 1
+                key = self.headers.get("Idempotency-Key") or (f"op-{op[:60]}" if op else f"anon-{lab.requests_total}")
+                with lab._lock:
+                    if key in lab.writes or len(lab.writes) < MAX_WRITE_KEYS:
+                        lab.writes[key] = lab.writes.get(key, 0) + 1
                 return self._reply(200, {"ok": True, "key": key})
 
         self._lock = threading.Lock()
+        self.host = host
         self.httpd = ThreadingHTTPServer((host, port), H)
         self.port = self.httpd.server_address[1]
         self._t = None
@@ -146,7 +215,7 @@ const sid = __SID__; let n = 0, f = 0;
 async function beat() {
   n += 1; document.getElementById('n').textContent = n;
   try {
-    const r = await fetch('/beat?sid=' + encodeURIComponent(sid) + '&n=' + n, {cache: 'no-store'});
+    const r = await fetch('beat?sid=' + encodeURIComponent(sid) + '&n=' + n, {cache: 'no-store'});
     document.getElementById('s').textContent = r.ok ? 'ok' : ('HTTP ' + r.status);
   } catch (e) { f += 1; document.getElementById('f').textContent = f; document.getElementById('s').textContent = 'sin red'; }
 }
