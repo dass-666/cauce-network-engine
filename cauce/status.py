@@ -15,9 +15,13 @@ from typing import Any
 
 from . import API_VERSION, __version__
 from .engine import Engine
-from .models import Health
+from .models import Health, Independence, Kind
 
 SCHEMA_CONNECTIVITY = "cauce.connectivity/1"
+# E5: qué demuestra la salida de cada conexión. Una IP pública distinta NO demuestra otro proveedor (puede ser el mismo
+# operador o compartir infraestructura): por eso la independencia de proveedor es siempre «not_verified».
+_EGRESS = {Independence.CONFIRMED: "distinct_egress_address", Independence.LIKELY: "distinct_gateway_only",
+           Independence.SHARED: "shared", Independence.UNKNOWN: "unknown"}
 SCHEMA_EVENTS = "cauce.status-events/1"
 SCHEMA_ROUTERS = "cauce.routers/1"
 SCHEMA_SESSIONS = "cauce.sessions/1"
@@ -94,6 +98,15 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
             "recovering": state == Health.DOWN.value and h.get("consecutive_ok", 0) > 0,
             "next_probe_in_s": round(max(0.0, nxt - now), 1) if isinstance(nxt, (int, float)) and nxt else None,
             "status": status,
+            # E5: capas de evidencia separadas (aditivo; los consumidores que no lo conocen lo ignoran)
+            "evidence": {
+                "detected": True,
+                "link_active": c.link.value == "up",
+                "connectivity_verified": status in ("ok", "degraded"),
+                "virtual_or_vpn": c.is_virtual or c.kind in (Kind.VPN, Kind.VIRTUAL),
+                "egress": _EGRESS.get(c.independence, "unknown"),
+                "provider_independence": "not_verified",
+            },
         })
     candidates = [x for x in conns if x["link"] == "up"]
     fresh = [x for x in conns if not x["stale"]]
@@ -125,7 +138,25 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
         "counts": {"connections": len(conns), "available": sum(1 for x in conns if x["available"]),
                    "measured": sum(1 for x in conns if x["measured"])},
         "connections": conns,
+        "evidence": {
+            "provider_independence": "not_verified",
+            # el motor sondea destinos de diagnóstico (TCP); no comprueba que el servicio final (un portal) responda
+            "service_availability": "not_measured_by_engine",
+            "session_continuity": _session_continuity(engine),
+        },
     }
+
+
+def _session_continuity(engine: Engine) -> dict[str, Any]:
+    reg = getattr(engine, "sessions", None)
+    if reg is None:
+        return {"sessions": 0}
+    ss = reg.all()
+    return {"sessions": len(ss),
+            "active": sum(1 for s in ss if s.state in ("active", "network_degraded")),
+            "uncertain": sum(1 for s in ss if s.state in ("stale", "network_unknown", "pending")),
+            "interrupted": sum(1 for s in ss if s.state in ("network_down", "browser_error")),
+            "requires_human": sum(1 for s in ss if s.requires_human)}
 
 
 def _sanitize(ev: dict[str, Any]) -> dict[str, Any]:

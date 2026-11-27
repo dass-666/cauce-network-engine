@@ -190,12 +190,17 @@ class ReducedViewTest(Base):
     def test_field_whitelist_is_exact(self):
         v = self.read.connectivity()
         self.assertEqual(set(v), {"schema", "api", "engine", "generated_at", "last_seq", "state", "usable",
-                                  "reason", "counts", "connections"})
+                                  "reason", "counts", "connections", "evidence"})
+        # E5: evidencia global solo con categorías y recuentos
+        self.assertEqual(set(v["evidence"]), {"provider_independence", "service_availability", "session_continuity"})
+        self.assertTrue(all(isinstance(x, int) for x in v["evidence"]["session_continuity"].values()))
         for c in v["connections"]:
             # 0.2.0: + frescura de la medición (números y booleanos, sin IP, MAC ni errores en texto)
             self.assertEqual(set(c), {"id", "kind", "link", "available", "measured", "health",
                                       "availability_pct", "avg_latency_ms",
-                                      "last_probe_age_s", "stale", "recovering", "next_probe_in_s", "status"})
+                                      "last_probe_age_s", "stale", "recovering", "next_probe_in_s", "status", "evidence"})
+            self.assertEqual(set(c["evidence"]), {"detected", "link_active", "connectivity_verified", "virtual_or_vpn",
+                                                  "egress", "provider_independence"})
             self.assertIsInstance(c["stale"], bool)
             self.assertIsInstance(c["recovering"], bool)
         for ev in self.read.events(0)["events"]:
