@@ -69,6 +69,9 @@ jobs:
             Write-Output "puerto $p : $ok"
             if (-not $ok) { exit 1 }
           }
+      - name: 7_VALIDACION_INTEGRAL.cmd rapido (no interactivo; lo físico queda PENDIENTE)
+        shell: cmd
+        run: scripts\laboratorio_integrado\7_VALIDACION_INTEGRAL.cmd rapido --no-interactivo --duracion 120
       - name: 4_DETENER.cmd y comprobar que se soltaron los puertos
         if: always()
         shell: cmd

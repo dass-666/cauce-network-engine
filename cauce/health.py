@@ -99,6 +99,11 @@ class HealthMonitor:
     def on_change(self, fn: Listener) -> None:
         self._listeners.append(fn)
 
+    def forget(self, conn_id: str) -> None:
+        """La conexión ya no existe: su salud deja de figurar (no queda «sana» para siempre)."""
+        with self._lock:
+            self._state.pop(conn_id, None)
+
     def state_of(self, conn_id: str) -> Health:
         with self._lock:
             h = self._state.get(conn_id)

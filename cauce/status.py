@@ -69,6 +69,15 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
         # 0.2.0: un resultado viejo no vale como estado actual (hilo de salud atascado, reloj, etc.)
         stale = measured and (age is None or age > stale_after)
         nxt = h.get("next_due")
+        # E4: veredicto único por conexión. «unverified» = sin medir o medición vieja (nunca se da por buena).
+        if c.link.value != "up" or (measured and not stale and state == Health.DOWN.value):
+            status = "down"
+        elif not measured or stale:
+            status = "unverified"
+        elif state == Health.DEGRADED.value:
+            status = "degraded"
+        else:
+            status = "ok"
         conns.append({
             "id": c.id,
             "kind": c.kind.value,
@@ -84,6 +93,7 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
             "stale": stale,
             "recovering": state == Health.DOWN.value and h.get("consecutive_ok", 0) > 0,
             "next_probe_in_s": round(max(0.0, nxt - now), 1) if isinstance(nxt, (int, float)) and nxt else None,
+            "status": status,
         })
     candidates = [x for x in conns if x["link"] == "up"]
     fresh = [x for x in conns if not x["stale"]]
