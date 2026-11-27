@@ -53,7 +53,7 @@ para que nadie pueda fingir el estado de un navegador.
 - `error_code` ∈ `page_unreachable`, `navigation_timeout`, `browser_closed`, `session_expired`, `network_error`, `other`.
 - Latido recomendado cada 5–10 s; más de uno cada 0,5 s → 429 `heartbeat_too_frequent`. `heartbeat_timeout_s` entre 5 y 300.
 - Errores: 400 `unsupported_field` / `invalid_request` / `invalid_error_code` / `authorization_not_declared` / `invalid_label`;
-  401 credencial inválida o revocada; 403 `not_session_owner`; 404 `unknown_session` (p. ej. el motor se reinició: volver a registrar)
+  401 credencial inválida o revocada; 403 `not_session_owner`; 404 `unknown_session` (sesión cerrada, caducada o persistencia apagada: volver a registrar)
   o `unknown_connection`; 409 `credential_has_session`, `label_in_use`, `too_many_sessions`.
 - Cliente de referencia (biblioteca estándar): `cauce.client.CauceSessionClient` (`register`, `heartbeat`, `get`, `close`).
 - **Responsabilidad de Forms, no verificable por Network:** usar perfiles de navegador separados para cada sesión (cookies y
@@ -96,6 +96,61 @@ las dos sesiones dependen de la misma conexión y caerán a la vez si esta cae.
 
 Regla de fallo seguro (igual que la conectividad): si Network no responde, Monitor debe mostrar «sin información», **nunca** «sesión caída».
 
+## 4b. Fases de diagnóstico y protección contra repeticiones (E4)
+
+Además de `state` (técnico), cada sesión expone `phase`, pensada para que Monitor la muestre a una persona:
+
+| phase | Cuándo | Qué hace la persona |
+|---|---|---|
+| `iniciada` | registrada, sin primer latido | nada |
+| `activa` | latido ok (incluye red lenta) | nada |
+| `perdida_conectividad` | la conexión de la sesión está caída | esperar |
+| `recuperada` | volvió a `active` hace menos de 120 s tras `network_down`, `stale`, `browser_error` o `network_unknown` | comprobar que la página sigue donde estaba |
+| `requiere_intervencion` | se interrumpió **mientras Forms declaraba `operation: "in_progress"`**, o Forms informó `session_expired` | revisar a mano y marcar como resuelta |
+| `incierta` | sin latidos (`stale`) o sin mediciones de red | comprobar el navegador |
+| `interrumpida` | Forms informó un error del navegador (p. ej. `browser_closed`) | reabrir la sesión |
+| `cerrada` | `DELETE` de la sesión; se guardan las 10 últimas en `closed` de `/status/sessions` | nada |
+
+- Latido nuevo: `{"status": "ok", "operation": "idle" | "in_progress"}`. Forms declara `in_progress` justo antes de una acción
+  que no se puede repetir sin riesgo (enviar, confirmar) e `idle` al terminar.
+- **Regla de no repetición:** si la sesión se interrumpe con una operación en curso, queda `requires_human: true` y
+  **recuperar la red no lo quita**. Solo lo quita `POST /api/v1/sessions/{id}/resolve` con credencial `admin` (evento de
+  auditoría `session.human_resolved`). Network Engine nunca relanza nada: no tiene forma de enviar un formulario.
+  Forms debe consultar `requires_human` antes de reintentar y no reintentar si es `true`.
+- Eventos de auditoría nuevos: `session.requires_human`, `session.recovered`, `session.human_resolved`.
+- Prueba de laboratorio (paso 09b de `7_VALIDACION_INTEGRAL.cmd`): Chromium real en el portal propio (127.0.0.1), red
+  SIMULADA, recorre las 8 fases, rellena un campo con un dato ficticio **sin enviar** y comprueba que ninguna petición POST
+  salió de la página y que el motor no creó tareas. Es evidencia **simulada** (F4 y F9 «Aprobado en simulación»).
+  Hasta que Forms integre el cliente, el script de laboratorio hace de dueño de la sesión; Forms no se ha modificado.
+
+## 4c. Persistencia del estado tras reinicios (E5)
+
+Archivo `sessions_state.json` en la carpeta de datos del motor (permisos 0600). Se activa por omisión y se apaga con
+`sessions.persist: false`. Para empezar de cero: parar el motor y borrar `sessions_state.json` y `sessions_state.json.bak`.
+
+- **Qué guarda (lista blanca):** id y etiqueta de la sesión, id (no el secreto) y nombre de la credencial dueña, conexión,
+  plazo de latido, último estado, operación (`idle`/`in_progress`), marca de intervención humana y su motivo, número de
+  latidos e historial de las 10 últimas cerradas. **No** guarda URL, cookies, formularios, páginas ni datos personales.
+- **Escritura segura:** temporal + fsync + reemplazo atómico; la versión buena anterior queda en `.bak`; resumen SHA-256.
+  Un cambio de operación o de marca se guarda al momento; los meros latidos, como mucho cada 30 s.
+- **Al reiniciar:** cada sesión vuelve como `stale` / `engine_restarted` (fase «incierta», `restored: true`) hasta que su
+  dueño vuelva a latir con la MISMA credencial y el mismo id.
+  - Si tenía `operation: in_progress`, vuelve con `requires_human` (`engine_restart_during_operation`).
+  - Una marca `requires_human` previa se conserva. **Solo `POST /sessions/{id}/resolve` (admin) la quita**: ni el latido, ni la
+    recuperación de la red, ni otro reinicio, ni un nuevo registro.
+  - Si el dueño perdió el id y vuelve a registrarse, la sesión restaurada se cierra como `replaced_after_restart` y la nueva
+    **hereda** la marca de intervención.
+- **Caducidad:** una sesión sin latidos durante `sessions.restore_max_age_s` (3600 s por omisión, 60–604800) se cierra como
+  `expired` (o `expired_after_restart` si fue durante el apagado). Si tenía una operación en curso, se cierra marcada como
+  `requires_human`. Nada se repite ni se da por bueno.
+- **Archivo dañado:** se usa el `.bak` (auditoría `session.state_recovered_from_backup`); si también está dañado se
+  empieza vacío (`session.state_corrupt`). El dañado se aparta como `.corrupt-<fecha>`, nunca se borra. Editar el archivo
+  a mano invalida el resumen: no sirve para «autorizar» una sesión.
+- **Fallo de escritura** (disco lleno, permisos): el motor sigue en memoria; se anota `session.state_write_failed` una vez
+  y `session.state_saved` cuando vuelve a poder escribir.
+- Pruebas: `tests/test_sesiones_persistencia.py` (reinicio, caída con SIGKILL, escritura cortada, archivo dañado o
+  alterado, fallo de escritura, suspensión corta y larga, caducidad, 4 escritores simultáneos, ausencia de secretos).
+
 ## 5. Tiempos de detección (simulación, valores por defecto)
 
 | Situación | Se detecta en | Depende de |
@@ -109,7 +164,7 @@ En el motor real estos tiempos **no se han medido** en Windows físico.
 
 ## 6. Límites conocidos
 
-- Las sesiones viven en memoria: tras reiniciar el motor desaparecen y Forms recibe 404 `unknown_session`.
+- Desde E5 el estado de diagnóstico se guarda en disco (§4c). Con `sessions.persist: false` vuelve el comportamiento anterior: las sesiones se pierden al reiniciar.
 - Network no ve el navegador: el estado `browser_*` es lo que Forms declara. Un Forms con errores puede declarar `ok` falsamente.
 - Una credencial `session` revocada deja su sesión sin latidos → `stale`; el operador puede cerrarla con el token `admin`.
 - Mismo límite de DPAPI que las credenciales `read`: no aísla procesos del mismo usuario de Windows.

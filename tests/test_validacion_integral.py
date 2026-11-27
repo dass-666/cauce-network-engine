@@ -117,7 +117,9 @@ class ReglasTest(unittest.TestCase):
             lab.validar_carpeta(lb.d, crear=True)
             self.assertEqual(lb.desactualizado(), ["sin instalar"])
             (lb.ne / "cauce").mkdir(parents=True)
-            lb.estado.update({"commits": {"network_engine": "sin git", "monitor": lab.VERSIONES["monitor"]["commit"],
+            lb.monitor.mkdir()
+            lb.forms.mkdir()
+            lb.estado.update({"instalado": lab.ahora(), "commits": {"network_engine": "sin git", "monitor": lab.VERSIONES["monitor"]["commit"],
                                           "forms": lab.VERSIONES["forms"]["commit"]}, "forms": True})
             lb.guardar()
             self.assertEqual(lb.desactualizado(), [])
@@ -125,6 +127,190 @@ class ReglasTest(unittest.TestCase):
             lb.guardar()
             self.assertTrue(any("monitor" in m for m in lb.desactualizado()))
             self.assertEqual(lab.main(["--dir", str(lb.d), "al-dia"]), 3)
+            lb.estado["commits"]["monitor"] = lab.VERSIONES["monitor"]["commit"]
+            lb.estado["instalacion_en_curso"] = lab.ahora()      # E5: una instalación cortada a medias
+            lb.guardar()
+            self.assertIn("una instalación anterior no terminó", lb.desactualizado())
+
+
+class RobustezLanzadorTest(unittest.TestCase):
+    """E5: comprobación previa, bloqueo, restauración tras una actualización fallida y cancelación segura."""
+
+    def test_bloqueo_impide_dos_ejecuciones_y_se_libera(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            with lab.Bloqueo(d, "primera"):
+                with self.assertRaises(lab.Ocupado):
+                    with lab.Bloqueo(d, "segunda"):
+                        pass
+            self.assertFalse((d / ".en_uso").exists())
+            with lab.Bloqueo(d, "tercera"):
+                pass
+
+    def test_bloqueo_huerfano_se_sustituye(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / ".en_uso").write_text('{"pid": 999999999, "quien": "cortada"}', "utf-8")
+            with lab.Bloqueo(d, "nueva"):
+                self.assertIn('"nueva"', (d / ".en_uso").read_text("utf-8"))
+
+    def test_apagado_brusco_durante_la_instalacion_no_pierde_la_anterior(self):
+        """E6: si el equipo se apaga (o se mata el proceso) mientras se instala, queda .anterior con la instalación
+        buena. La siguiente instalación no debe borrarla: si también falla (p. ej. sin internet), se restaura."""
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            anterior = lb.d / ".anterior"
+            anterior.mkdir()
+            for x in (lb.ne, lb.monitor, lb.forms):
+                (anterior / x.name).mkdir()
+                (anterior / x.name / "BUENA").write_text("v", "utf-8")
+            (anterior / lb.estado_f.name).write_text(json.dumps({"instalado": "antes", "monitor_admin": "x"}), "utf-8")
+            lb.monitor.mkdir()
+            (lb.monitor / "A_MEDIAS").write_text("x", "utf-8")              # lo que dejó la instalación cortada
+            lb.estado = {"instalacion_en_curso": "antes", "monitor_admin": "x"}
+            lb.guardar()
+
+            def sin_internet(*a, **kw):
+                raise OSError("sin internet (simulado)")
+            lb._instalar = sin_internet
+            with self.assertRaises(OSError):
+                lb.instalar(True, False, False, {})
+            self.assertTrue((lb.monitor / "BUENA").exists(), "la instalación buena anterior debe volver")
+            self.assertFalse((lb.monitor / "A_MEDIAS").exists())
+            self.assertEqual(json.loads(lb.estado_f.read_text("utf-8")).get("instalado"), "antes")
+
+    def test_estado_danado_no_revienta_y_pide_reinstalar(self):
+        """E6 (demostrado en el laboratorio): un estado.json a medio escribir hacía fallar previo y al-dia con
+        una traza. Ahora se aparta como .corrupt-<fecha> y la instalación se da por desactualizada."""
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            for basura in ('{"instalado": "ant', "[1, 2]", "\xff\xfe"):
+                lb.estado_f.write_bytes(basura.encode("latin-1"))
+                otro = lab.Lab(lb.d)
+                self.assertEqual(otro.estado, {})
+                self.assertFalse(otro.estado_f.exists())
+                self.assertTrue(otro.desactualizado(), "con el estado perdido hay que reinstalar")
+                self.assertTrue(otro.previo()["reinstalar"])
+            apartados = list(lb.d.glob("estado.json.corrupt-*"))
+            self.assertTrue(apartados, "el archivo dañado se conserva apartado")
+
+    def test_actualizacion_fallida_restaura_la_anterior(self):
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            for x in (lb.ne, lb.monitor, lb.forms):
+                x.mkdir()
+                (x / "VIEJO").write_text("v", "utf-8")
+            lb.estado.update({"instalado": "antes", "commits": {"monitor": "viejo"}, "monitor_admin": "x"})
+            lb.guardar()
+
+            def revienta(*a, **kw):
+                (lb.monitor).mkdir(exist_ok=True)
+                (lb.monitor / "A_MEDIAS").write_text("x", "utf-8")
+                raise OSError("sin internet (simulado)")
+            lb._instalar = revienta
+            with self.assertRaises(OSError):
+                lb.instalar(True, False, False, {})
+            self.assertTrue((lb.monitor / "VIEJO").exists())
+            self.assertFalse((lb.monitor / "A_MEDIAS").exists())
+            self.assertEqual(lab.Lab(lb.d).estado.get("commits"), {"monitor": "viejo"})
+            self.assertFalse((lb.d / ".anterior").exists())
+
+    def test_previo_detecta_puerto_ajeno_y_no_toca_nada(self):
+        import socket
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            s = socket.socket()
+            s.bind(("127.0.0.1", lb.p["network_engine"]))
+            s.listen(1)
+            try:
+                r = lb.previo()
+            finally:
+                s.close()
+            puertos = next(x for x in r["detalle"] if x["nombre"] == "puertos del laboratorio")
+            self.assertFalse(r["ok"])
+            self.assertTrue(puertos["bloqueante"])
+            self.assertIn(str(lb.p["network_engine"]), puertos["detalle"])
+
+    def test_previo_sin_problemas(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = lab.Lab(Path(d) / "l").previo()
+            self.assertTrue(r["reinstalar"])
+            py = next(x for x in r["detalle"] if x["nombre"] == "python")
+            # El laboratorio exige 3.11+ porque Monitor solo se prueba en 3.11–3.13. En la CI con 3.10 ese punto
+            # debe bloquear (es lo correcto) y el resto debe estar bien.
+            if sys.version_info >= (3, 11):
+                self.assertTrue(r["ok"], r)
+            else:
+                self.assertFalse(r["ok"])
+                self.assertTrue(py["bloqueante"] and not py["ok"])
+                self.assertTrue(all(x["ok"] for x in r["detalle"] if x["nombre"] != "python"), r)
+
+    def test_cancelacion_deja_informe_parcial_y_nada_aprobado(self):
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            it = I.Integral(lb, "rapido", False, "github.com:443", None)
+            def corta():
+                raise KeyboardInterrupt
+            it.p01_versiones = corta
+            it.p15_cierre = lambda: {"estado": I.PASA, "detalle": "cerrado"}
+            self.assertEqual(it.ejecutar(), 130)
+            estados = {p["id"]: p["estado"] for p in it.pasos}
+            self.assertEqual(estados["01"], I.CANCELADA)
+            self.assertEqual(estados["15"], I.PASA)
+            self.assertNotIn(I.PASA, [v for k, v in estados.items() if k != "15"])
+            self.assertTrue((it.dir / "INFORME_VALIDACION_INTEGRAL.md").exists())
+
+
+class SesionSupervisionTest(unittest.TestCase):
+    """E5: una ejecución cortada dejaba viva la credencial «lab-supervision»; la siguiente no podía crear la suya (409)
+    y la supervisión seguía SIN sesión y sin avisarlo. Ahora se revoca la sobrante y, si aun así falla, es un problema."""
+
+    def _integral(self, d, tokens, falla_post=False):
+        from types import SimpleNamespace
+        from unittest import mock
+        ne_dir = Path(d) / "ne"
+        (ne_dir / "cauce").mkdir(parents=True)
+        (ne_dir / "cauce" / "sessions.py").write_text("", "utf-8")
+        it = object.__new__(I.Integral)
+        it.lab = SimpleNamespace(ne=ne_dir, p={"network_engine": 1})
+
+        def ne(ruta, metodo="GET", cuerpo=None):
+            if ruta == "/tokens" and metodo == "GET":
+                return 200, {"tokens": [dict(t) for t in tokens.values()]}
+            if ruta == "/tokens" and metodo == "POST":
+                if falla_post or any(t["name"] == cuerpo["name"] and not t["revoked_at"] for t in tokens.values()):
+                    return 409, {"error": "name_in_use"}
+                tid = f"{len(tokens):08x}"
+                tokens[tid] = {"id": tid, "name": cuerpo["name"], "revoked_at": None}
+                return 201, {"id": tid, "token": "x", "name": cuerpo["name"]}
+            if ruta.startswith("/tokens/") and metodo == "DELETE":
+                tokens[ruta.split("/")[-1]]["revoked_at"] = 1.0
+                return 200, {}
+            return 404, None
+        it.ne = ne
+        return it, mock.patch.object(I.L, "http", return_value=(201, {"id": "bs_1"}))
+
+    def test_credencial_sobrante_de_una_ejecucion_cortada_no_impide_la_sesion(self):
+        tokens = {"aaaaaaaa": {"id": "aaaaaaaa", "name": "lab-supervision", "revoked_at": None}}
+        with tempfile.TemporaryDirectory() as d:
+            it, parche = self._integral(d, tokens)
+            with parche:
+                s = it._sesion_supervision()
+        self.assertIsNotNone(s)
+        self.assertIsNone(it.sesion_motivo)
+        self.assertEqual(tokens["aaaaaaaa"]["revoked_at"], 1.0)
+
+    def test_si_no_se_puede_crear_queda_el_motivo(self):
+        with tempfile.TemporaryDirectory() as d:
+            it, parche = self._integral(d, {}, falla_post=True)
+            with parche:
+                s = it._sesion_supervision()
+        self.assertIsNone(s)
+        self.assertIn("409", it.sesion_motivo)
 
 
 if __name__ == "__main__":

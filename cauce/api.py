@@ -19,6 +19,7 @@ import json
 import os
 import re
 import secrets
+import sys
 import threading
 import time
 from http import HTTPStatus
@@ -52,6 +53,22 @@ class ApiError(Exception):
 Route = tuple[str, re.Pattern, Callable, str]   # método, patrón, función, permiso exigido
 
 
+class _Server(ThreadingHTTPServer):
+    """E5: un cliente que se va a mitad de petición (p. ej. Monitor terminado con taskkill /F) provoca un RST. La clase
+    base imprimía una traza completa por ello, y el laboratorio la contaba como error del motor (causa demostrada:
+    ConnectionResetError [WinError 10054] en la CI de Windows; reproducido en Linux con SO_LINGER 0). Solo esas
+    desconexiones del cliente se anotan en una línea; cualquier otra excepción sigue saliendo con su traza completa."""
+
+    _CLIENTE_SE_FUE = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, self._CLIENTE_SE_FUE):
+            sys.stderr.write(f"aviso: un cliente local cerró la conexión a mitad de petición ({type(exc).__name__})\n")
+            return
+        super().handle_error(request, client_address)
+
+
 class CauceAPI:
     def __init__(self, engine: Engine, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, token: Optional[str] = None):
         if host != "127.0.0.1":
@@ -82,7 +99,7 @@ class CauceAPI:
             def do_DELETE(self):
                 api._dispatch(self, "DELETE")
 
-        self.httpd = ThreadingHTTPServer((host, port), Handler)
+        self.httpd = _Server((host, port), Handler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self._thread: Optional[threading.Thread] = None
@@ -162,6 +179,11 @@ class CauceAPI:
             admin = p.scope == SCOPE_ADMIN
             return e.sessions.close(m["sid"], p.token_id, admin=admin,
                                     reason="cerrada por el operador" if admin else "cerrada por su dueño")
+
+        @r("POST", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})/resolve")
+        def sess_resolve(req, m, q, body):
+            # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
+            return e.sessions.view(e.sessions.resolve(m["sid"]))
 
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):

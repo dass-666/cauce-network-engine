@@ -36,6 +36,7 @@ from typing import Any, Callable, Optional
 import lab as L
 
 PASA, FALLA, PENDIENTE, OMITIDA, INFO = "PASA", "FALLA", "PENDIENTE", "OMITIDA", "INFO"
+CANCELADA = "CANCELADA"   # E5: la persona canceló; nunca cuenta como aprobado
 FISICA, LOCAL, SIMULADA = "FÍSICA", "LOCAL", "SIMULADA"
 PERFILES = {
     "rapido": {"desc": "comprobación básica", "estabilidad_s": 60, "corte_cada_s": 0, "fisica": False, "caliente": False},
@@ -611,23 +612,31 @@ class Integral:
     def _sesion_supervision(self) -> Optional[dict]:
         """Sesión de diagnóstico SIN navegador que late durante la supervisión, para medir su continuidad a lo largo de
         horas (fases, intervención humana). No envía nada; solo latidos de estado. None si NE no tiene sesiones."""
+        self.sesion_motivo = None
         if not (self.lab.ne / "cauce" / "sessions.py").exists():
             return None
-        st, tok = self.ne("/tokens", "POST", {"name": "lab-supervision", "scope": "session"})
+        # Una ejecución anterior cortada (corte de luz, contenedor reclamado, Ctrl+C a destiempo) puede dejar viva su
+        # credencial y su sesión (E5 y E6). Se limpia lo sobrante del laboratorio sin dar nada por revisado, y la
+        # etiqueta y el nombre nuevos son únicos.
+        self.sobrantes = L.limpiar_sobrantes_del_laboratorio(self.ne)
+        nombre = L.etiqueta_unica("lab-supervision")
+        st, tok = self.ne("/tokens", "POST", {"name": nombre, "scope": "session"})
         if st not in (200, 201) or not isinstance(tok, dict):
+            self.sesion_motivo = f"no se pudo crear su credencial (HTTP {st})"
             return None
         base = f"http://127.0.0.1:{self.lab.p['network_engine']}/api/v1"
-        st, v = L.http(base + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+        st, v = L.http(base + "/sessions", "POST", {"label": nombre, "connection_id": "sim-a",
                                                      "authorized_by_user": True, "heartbeat_timeout_s": 300}, tok["token"])
         if st != 201:
             self.ne(f"/tokens/{tok['id']}", "DELETE")
+            self.sesion_motivo = f"no se pudo registrar (HTTP {st})"
             return None
-        return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base}
+        return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base, "label": nombre}
 
     def _latir_sesion(self, s: dict) -> dict:
         st, v = L.http(f"{s['base']}/sessions/{s['id']}/heartbeat", "POST", {"status": "ok", "operation": "idle"}, s["token"])
         if st == 404:                                   # NE se reinició (sesiones en memoria): se registra de nuevo
-            st2, v2 = L.http(s["base"] + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+            st2, v2 = L.http(s["base"] + "/sessions", "POST", {"label": s.get("label", "lab-supervision"), "connection_id": "sim-a",
                                                                "authorized_by_user": True, "heartbeat_timeout_s": 300}, s["token"])
             if st2 == 201:
                 s["id"] = v2["id"]
@@ -725,6 +734,8 @@ class Integral:
             f = (m.get("sesion") or {}).get("fase")
             if f:
                 fases[f] = fases.get(f, 0) + 1
+        if getattr(self, "sesion_motivo", None):
+            problemas.append(f"la sesión de supervisión no se pudo crear: {self.sesion_motivo}")
         sesion_persona = sum(1 for m in muestras if (m.get("sesion") or {}).get("requiere_persona"))
         if sesion_persona:
             problemas.append(f"la sesión de supervisión (sin operación en curso) pidió intervención humana en {sesion_persona} muestras")
@@ -794,7 +805,7 @@ class Integral:
                 "detalle": "; ".join(hallazgos) or "informes sin contraseñas, tokens ni MAC (IP enmascaradas)"}
 
     def escribir(self) -> Path:
-        cuenta = {e: sum(1 for p in self.pasos if p["estado"] == e) for e in (PASA, FALLA, PENDIENTE, OMITIDA, INFO)}
+        cuenta = {e: sum(1 for p in self.pasos if p["estado"] == e) for e in (PASA, FALLA, PENDIENTE, OMITIDA, INFO, CANCELADA)}
         filas = [f"| {p['id']} | {p['titulo']} | **{p['estado']}** | {p['evidencia']} | {p['s']} | "
                  f"{str(p.get('detalle', '')).replace('|', '/')[:300]} |" for p in self.pasos]
         todos = [f"F{i}" for i in range(1, 13)]
@@ -805,7 +816,8 @@ class Integral:
                f"- Perfil: **{self.perfil}** ({self.cfg['desc']}) · interactivo: {'sí' if self.interactivo else 'no'} · "
                f"inicio {dt.datetime.fromtimestamp(self.inicio):%Y-%m-%d %H:%M} · duración {(time.time() - self.inicio) / 60:.1f} min",
                f"- Commits: {json.dumps(self.lab.estado.get('commits') or {}, ensure_ascii=False)}",
-               f"- Resultado: {cuenta[PASA]} PASA · {cuenta[FALLA]} FALLA · {cuenta[PENDIENTE]} PENDIENTE · {cuenta[OMITIDA]} OMITIDA",
+               f"- Resultado: {cuenta[PASA]} PASA · {cuenta[FALLA]} FALLA · {cuenta[PENDIENTE]} PENDIENTE · {cuenta[OMITIDA]} OMITIDA"
+               + (f" · {cuenta[CANCELADA]} CANCELADA (informe parcial)" if cuenta[CANCELADA] else ""),
                "- PENDIENTE = falta un requisito físico o un destino autorizado: **no cuenta como aprobado**.",
                "- Evidencia: FÍSICA (Windows real, enlaces reales) · LOCAL (en el equipo, sin cortar la red) · SIMULADA.", "",
                "| Paso | Prueba | Estado | Evidencia | s | Detalle |", "|---|---|---|---|---|---|", *filas, "",
@@ -858,13 +870,34 @@ class Integral:
                  ("14", "Estabilidad y recursos", self.p14_estabilidad),
                  ("15", "Cierre seguro del laboratorio", self.p15_cierre),
                  ("16", "Informes sin datos sensibles", self.p16_datos_sensibles)]
-        for pid, titulo, fn in pasos:
+        cancelada = False
+        for i, (pid, titulo, fn) in enumerate(pasos):
+            if cancelada:
+                break
             if pid in ("07", "08a", "08b", "09", "09b", "10", "11", "13", "14") and L.puerto_libre(self.lab.p["network_engine"]) \
                     and not any(p["id"] == "04" and p["estado"] == PASA for p in self.pasos):
                 self.pasos.append({"id": pid, "titulo": titulo, "estado": OMITIDA, "evidencia": LOCAL, "s": 0,
                                    "detalle": "los motores no arrancaron (paso 04)"})
                 continue
-            self.paso(pid, titulo, fn)
+            try:
+                self.paso(pid, titulo, fn)
+            except KeyboardInterrupt:
+                # E5: cancelación segura. Lo hecho queda en el informe; lo que falta, CANCELADA (nunca aprobado);
+                # se detienen solo los procesos del laboratorio.
+                cancelada = True
+                L.decir(f"\nCancelado por la persona durante [{pid}]. Se cierra el laboratorio y se guarda el informe parcial.")
+                for pid2, titulo2, _ in pasos[i:]:
+                    if pid2 != "15":
+                        self.pasos.append({"id": pid2, "titulo": titulo2, "estado": CANCELADA, "evidencia": LOCAL, "s": 0,
+                                           "detalle": "cancelada antes de terminar"})
+                try:
+                    self.paso("15", "Cierre seguro del laboratorio", self.p15_cierre)
+                except KeyboardInterrupt:
+                    self.lab.detener()
+        if cancelada:
+            f = self.escribir()
+            L.decir(f"\nInforme PARCIAL: {f}")
+            return 130
         # F11 y F12 locales: los tres motores a la vez y rutas sin tocar (si no hubo guion físico)
         if any(p["id"] == "04" and p["estado"] == PASA for p in self.pasos):
             self.mf("F11", "Aprobado físicamente" if L.WINDOWS else "Aprobado en simulación",
@@ -887,7 +920,14 @@ def main(argv=None) -> int:
     lab = L.Lab(Path(a.dir))
     L.validar_carpeta(lab.d, crear=False)
     interactivo = not a.no_interactivo and os.environ.get("CAUCE_LAB_SIN_PAUSA") != "1" and sys.stdin.isatty()
-    return Integral(lab, a.perfil, interactivo, a.objetivo, a.duracion).ejecutar()
+    try:
+        with L.Bloqueo(lab.d, f"integral {a.perfil}"):
+            it = Integral(lab, a.perfil, interactivo, a.objetivo, a.duracion)
+            L.registrar_en(it.dir / "registro_detallado.log")     # p16 también lo revisa
+            return it.ejecutar()
+    except L.Ocupado as e:
+        L.decir(str(e))
+        return 4
 
 
 if __name__ == "__main__":

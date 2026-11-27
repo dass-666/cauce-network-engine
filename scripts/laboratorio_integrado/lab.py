@@ -45,8 +45,79 @@ def ahora() -> str:
     return dt.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
 
 
+_REGISTRO: list = [None]        # archivo de registro detallado (E5); None = solo pantalla
+
+
+def registrar_en(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _REGISTRO[0] = path
+
+
 def decir(msg: str) -> None:
     print(msg, flush=True)
+    if _REGISTRO[0] is not None:
+        try:
+            with open(_REGISTRO[0], "a", encoding="utf-8") as fh:
+                fh.write(f"{dt.datetime.now().strftime('%H:%M:%S')} {msg}\n")
+        except OSError:
+            pass
+
+
+def pid_vivo(pid: int) -> bool:
+    """Sin señales: en Windows os.kill(pid, 0) TERMINA el proceso. Se consulta la lista de procesos."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if WINDOWS:
+        try:
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True,
+                                 text=True, timeout=15).stdout
+        except (OSError, subprocess.SubprocessError):
+            return True                # ante la duda, se considera vivo (no se roba el bloqueo)
+        return f'"{pid}"' in out
+    return Path(f"/proc/{pid}").exists()
+
+
+class Ocupado(SystemExit):
+    pass
+
+
+class Bloqueo:
+    """Un solo lanzador a la vez por carpeta de laboratorio. Un bloqueo de un proceso que ya no existe se sustituye."""
+
+    def __init__(self, d: Path, quien: str):
+        self.f = d / ".en_uso"
+        self.quien = quien
+
+    def __enter__(self):
+        for _ in range(2):
+            try:
+                fd = os.open(self.f, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                try:
+                    otro = json.loads(self.f.read_text("utf-8"))
+                except (OSError, ValueError):
+                    otro = {}
+                if pid_vivo(otro.get("pid", 0)):
+                    raise Ocupado(f"Ya hay otro lanzador del laboratorio en marcha ({otro.get('quien')}, PID "
+                                  f"{otro.get('pid')}, desde {otro.get('desde')}). Espera a que termine o ciérralo.")
+                self.f.unlink(missing_ok=True)       # bloqueo huérfano de una ejecución cortada
+                continue
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"pid": os.getpid(), "quien": self.quien, "desde": ahora()}, fh)
+            return self
+        raise Ocupado("No se pudo tomar el bloqueo del laboratorio")
+
+    def __exit__(self, *exc):
+        try:
+            if json.loads(self.f.read_text("utf-8")).get("pid") == os.getpid():
+                self.f.unlink()
+        except (OSError, ValueError):
+            pass
+        return False
 
 
 def carpeta_por_omision() -> Path:
@@ -132,6 +203,42 @@ def desplazamiento_puertos() -> int:
     return v if 0 <= v <= 500 else 0
 
 
+# Etiquetas y credenciales que crea el propio laboratorio (pasos 09b y 14). Nunca se toca nada que no empiece así.
+PREFIJOS_DEL_LABORATORIO = ("lab-forms", "lab-supervision", "lab-sesion")
+
+
+def limpiar_sobrantes_del_laboratorio(ne) -> dict:
+    """E6 (demostrado): una validación cortada (Ctrl+C, apagón) deja en el motor su credencial y su sesión de prueba, y
+    como las sesiones ahora se conservan tras reiniciar, la siguiente ejecución recibía 409 (etiqueta en uso o límite
+    de sesiones) y los pasos 09b y 14 fallaban durante una hora.
+
+    ``ne(ruta, metodo="GET", cuerpo=None) -> (estado, json)`` llama a la API con la credencial admin.
+    - Se revocan las credenciales sobrantes del laboratorio (no tienen nada pendiente).
+    - Se cierran las sesiones sobrantes del laboratorio que NO piden revisión: no hay nada que revisar.
+    - Las que SÍ piden revisión NO se tocan ni se dan por revisadas: siguen hasta que una persona las resuelva o
+      caduquen, y se informan. Las ejecuciones nuevas usan etiquetas únicas, así que no heredan esa marca.
+    """
+    out = {"credenciales_revocadas": 0, "sesiones_cerradas": 0, "sesiones_que_piden_revision": []}
+    st, r = ne("/status/sessions")
+    for x in ((r or {}).get("sessions") or []) if st == 200 and isinstance(r, dict) else []:
+        if not str(x.get("label", "")).startswith(PREFIJOS_DEL_LABORATORIO):
+            continue
+        if x.get("requires_human"):
+            out["sesiones_que_piden_revision"].append(x.get("label"))
+        elif ne(f"/sessions/{x['id']}", "DELETE")[0] == 200:
+            out["sesiones_cerradas"] += 1
+    st, r = ne("/tokens")
+    for t in ((r or {}).get("tokens") or []) if st == 200 and isinstance(r, dict) else []:
+        if str(t.get("name", "")).startswith(PREFIJOS_DEL_LABORATORIO) and not t.get("revoked_at"):
+            if ne(f"/tokens/{t['id']}", "DELETE")[0] in (200, 204):
+                out["credenciales_revocadas"] += 1
+    return out
+
+
+def etiqueta_unica(prefijo: str) -> str:
+    return f"{prefijo}-{int(time.time())}"
+
+
 def entorno_limpio(extra: dict[str, str]) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("MONITOREO_", "CAUCE_", "PLAYWRIGHT_"))}
     env.update(extra)
@@ -144,7 +251,30 @@ class Lab:
         self.d = d
         self.p = {k: v + desplazamiento_puertos() for k, v in VERSIONES["puertos"].items()}
         self.estado_f = d / "estado.json"
-        self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
+        self.estado = self._leer_estado()
+
+    def _leer_estado(self) -> dict:
+        """estado.json ilegible (apagado a mitad de escritura, editado a mano...) no debe reventar con una traza
+        (E6, demostrado). Se aparta como .corrupt-<fecha> para que nadie lo pierda y se sigue con un estado vacío:
+        al-dia pedirá reinstalar (salida 3) y previo lo avisará."""
+        if not self.estado_f.exists():
+            return {}
+        try:
+            r = json.loads(self.estado_f.read_text("utf-8"))
+            if isinstance(r, dict):
+                return r
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+        base = f"{self.estado_f.name}.corrupt-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        destino, n = self.estado_f.with_name(base), 1
+        while destino.exists():                     # en Windows rename no sobrescribe
+            destino, n = self.estado_f.with_name(f"{base}-{n}"), n + 1
+        try:
+            self.estado_f.rename(destino)
+            decir(f"  AVISO: {self.estado_f.name} estaba dañado; se apartó como {destino.name}. Hay que reinstalar.")
+        except OSError:
+            decir(f"  AVISO: {self.estado_f.name} está dañado y no se pudo apartar. Hay que reinstalar.")
+        return {}
 
     # -------------------------------------------------------------------- rutas
     @property
@@ -214,6 +344,66 @@ class Lab:
                         str(carpeta / requisitos)], check=True)
 
     def instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
+        """E5: si ya había una instalación, se aparta en .anterior y se restaura si la nueva falla a medias."""
+        anterior = self.d / ".anterior"
+        if anterior.exists() and any(anterior.iterdir()):
+            # E6: .anterior solo existe mientras se instala. Si está aquí, una instalación se cortó de golpe
+            # (apagado, proceso matado, restauración a medias) y dejó la buena: se devuelve a su sitio ANTES de
+            # empezar, para no perderla si esta también falla.
+            self._restaurar_anterior(anterior)
+            decir("  Se encontró una instalación cortada: se recuperó la anterior antes de reinstalar.")
+        elif anterior.exists():
+            shutil.rmtree(anterior, ignore_errors=True)
+        partes = [x for x in (self.ne, self.monitor, self.forms, self.estado_f) if x.exists()]
+        estado_previo = dict(self.estado)
+        if partes and estado_previo.get("instalado") and not estado_previo.get("instalacion_en_curso"):
+            anterior.mkdir()
+            for x in partes:
+                x.rename(anterior / x.name)
+            decir(f"  Instalación anterior apartada en {anterior} (se restaura si esta falla)")
+        self.estado = {k: v for k, v in estado_previo.items() if k in ("monitor_admin", "resultados")}
+        self.estado["instalacion_en_curso"] = ahora()
+        self.estado["sin_venv"] = bool(sin_venv)
+        self.guardar()
+        try:
+            r = self._instalar(sin_venv, sin_forms, navegador_forms, fuentes)
+        except BaseException as e:
+            decir(f"La instalación falló: {type(e).__name__}: {e}")
+            if anterior.exists():
+                self._restaurar_anterior(anterior)
+                decir("  Se restauró la instalación anterior: el laboratorio queda como estaba.")
+            raise
+        if anterior.exists():
+            shutil.rmtree(anterior, ignore_errors=True)
+        return r
+
+    @staticmethod
+    def _quitar(x: Path) -> None:
+        """Quita lo instalado a medias. Tras un Ctrl+C, pip (o su hijo) puede seguir escribiendo un instante y
+        rmtree deja la carpeta a medio borrar (E6, demostrado): se reintenta y, si no se puede, se aparta."""
+        for _ in range(20):
+            if x.is_dir():
+                shutil.rmtree(x, ignore_errors=True)
+            elif x.exists():
+                try:
+                    x.unlink()
+                except OSError:
+                    pass
+            if not x.exists():
+                return
+            time.sleep(0.25)
+        x.rename(x.with_name(f"{x.name}.a-medias-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"))
+
+    def _restaurar_anterior(self, anterior: Path) -> None:
+        for x in (self.ne, self.monitor, self.forms, self.estado_f):   # lo instalado a medias se quita entero
+            if (anterior / x.name).exists() or x != self.estado_f:
+                self._quitar(x)
+        for x in list(anterior.iterdir()):
+            x.rename(self.d / x.name)
+        shutil.rmtree(anterior, ignore_errors=True)
+        self.estado = self._leer_estado()
+
+    def _instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
         decir(f"Instalando el laboratorio en {self.d}")
         ign = shutil.ignore_patterns(".git", "reports", "__pycache__", "*.pyc")
         if self.ne.exists():
@@ -234,6 +424,7 @@ class Lab:
                                        env=entorno_limpio({"PLAYWRIGHT_BROWSERS_PATH": str(self.navegadores)}))
                     self.estado["navegador_forms"] = r.returncode == 0
         self.estado.update({"instalado": ahora(), "commits": commits, "forms": not sin_forms})
+        self.estado.pop("instalacion_en_curso", None)
         self.estado.setdefault("monitor_admin", secrets.token_urlsafe(14))      # solo laboratorio, datos ficticios
         self.guardar()
         return self.resultado("instalacion", {"ok": True, "commits": commits})
@@ -245,6 +436,15 @@ class Lab:
             return ["sin instalar"]
         c = self.estado.get("commits") or {}
         motivos = []
+        if self.estado.get("instalacion_en_curso") or not self.estado.get("instalado"):
+            motivos.append("una instalación anterior no terminó")
+        for nombre, carpeta in (("monitor", self.monitor), ("forms", self.forms)):
+            if nombre == "forms" and not self.estado.get("forms", True):
+                continue
+            if not carpeta.exists():
+                motivos.append(f"falta la carpeta de {nombre}")
+            elif self.estado.get("sin_venv") is False and self.py(nombre) == sys.executable:
+                motivos.append(f"falta el entorno de Python de {nombre}")
         head = subprocess.run(["git", "-C", str(NE_REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         if head and c.get("network_engine") not in (head, "sin git"):
             motivos.append(f"Network Engine instalado {str(c.get('network_engine'))[:7]} y esta carpeta está en {head[:7]}")
@@ -298,7 +498,9 @@ class Lab:
     # -------------------------------------------------------------------- servicios
     def _cfg_ne(self, modo: str, lab_url: str | None, objetivo: str | None = None) -> Path:
         cfg = {"data_dir": str(self.datos("network-engine", "x").parent), "api": {"port": self.p["network_engine"]},
-               "lab": {"rotation_enabled": False}}
+               "lab": {"rotation_enabled": False},
+               # 8 es el máximo del motor: una sesión sobrante que pide revisión no debe bloquear las pruebas (E6)
+               "sessions": {"max": 8}}
         if modo == "real" and objetivo:
             host = objetivo.rpartition(":")[0]
             cfg["health"] = {"targets": [objetivo]}                          # solo abrir y cerrar TCP a ese destino
@@ -462,6 +664,63 @@ class Lab:
             self.estado["pids"].pop(nombre, None)
         self.guardar()
         return hechos
+
+    # -------------------------------------------------------------------- comprobación previa (E5)
+    def previo(self) -> dict:
+        """Lo que puede impedir una validación, ANTES de empezar. bloqueante=True detiene el lanzador."""
+        det = []
+
+        def item(nombre, ok, detalle, bloqueante=True):
+            det.append({"nombre": nombre, "ok": bool(ok), "bloqueante": bloqueante and not ok, "detalle": detalle})
+
+        v = sys.version_info
+        item("python", v >= (3, 11), f"{v.major}.{v.minor}.{v.micro} ({sys.executable})"
+             + ("" if v >= (3, 11) else ": hace falta 3.11 o superior (recomendado 3.13 de python.org)"))
+        if WINDOWS and not shutil.which("py"):
+            item("lanzador py", False, "no está; se usa «python» (aviso: el lanzador funciona igual)", bloqueante=False)
+        item("git", shutil.which("git") is not None,
+             "presente" if shutil.which("git") else "no está: hace falta para «git pull»; la instalación no lo necesita",
+             bloqueante=False)
+        base = self.d if self.d.exists() else self.d.parent
+        try:
+            libre_gb = shutil.disk_usage(base).free / 1e9
+        except OSError:
+            libre_gb = -1
+        hace_falta = 3.0 if self.desactualizado() else 0.5
+        item("espacio en disco", libre_gb >= hace_falta, f"{libre_gb:.1f} GB libres; hacen falta {hace_falta:.1f} GB")
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+            t = base / f".prueba-escritura-{os.getpid()}"
+            t.write_text("x", "utf-8")
+            t.unlink()
+            item("permiso de escritura", True, str(base))
+        except OSError as e:
+            item("permiso de escritura", False, f"{base}: {e}")
+        p = self.comprobar_puertos() if self.estado_f.exists() else {"detalle": [
+            {"servicio": k, "puerto": x, "libre": puerto_libre(x), "del_laboratorio": False, "usado_por": quien_usa(x)}
+            for k, x in self.p.items()]}
+        ajenos = [f"{x['puerto']} ({x.get('usado_por') or 'otro programa'})" for x in p["detalle"]
+                  if not x["libre"] and not x["del_laboratorio"]]
+        propios = [x["servicio"] for x in p["detalle"] if x["del_laboratorio"]]
+        item("puertos del laboratorio", not ajenos, "libres" if not ajenos and not propios else
+             ("ocupados por otro programa: " + ", ".join(ajenos) + ". No se cierra nada ajeno: ciérralo tú o usa "
+              "CAUCE_LAB_DESPLAZAMIENTO_PUERTOS") if ajenos else "en uso por el propio laboratorio: " + ", ".join(propios))
+        item("procesos sobrantes del laboratorio", not propios,
+             "ninguno" if not propios else "de una ejecución anterior: se detendrán (solo los del laboratorio)",
+             bloqueante=False)
+        f = self.d / ".en_uso"
+        otro = {}
+        if f.exists():
+            try:
+                otro = json.loads(f.read_text("utf-8"))
+            except (OSError, ValueError):
+                otro = {}
+        en_uso = bool(otro) and pid_vivo(otro.get("pid", 0)) and otro.get("pid") != os.getpid()
+        item("otra ejecución en marcha", not en_uso, f"PID {otro.get('pid')} desde {otro.get('desde')}" if en_uso else "no")
+        motivos = self.desactualizado() if self.d.exists() else ["sin instalar"]
+        item("instalación", True, "al día" if not motivos else "se reinstalará: " + "; ".join(motivos), bloqueante=False)
+        return {"ok": not any(x["bloqueante"] for x in det), "detalle": det, "reinstalar": bool(motivos),
+                "sobrantes": propios}
 
     # -------------------------------------------------------------------- consultas
     def monitor_token(self) -> str | None:
@@ -665,6 +924,7 @@ def main(argv=None) -> int:
     pi.add_argument("--fuente-monitor", help="copiar Monitor de esta carpeta en vez de descargarlo")
     pi.add_argument("--fuente-forms", help="copiar Forms de esta carpeta en vez de descargarlo")
     sub.add_parser("comprobar")
+    sub.add_parser("previo", help="comprobación previa: Python, espacio, permisos, puertos, otra ejecución (1 = no seguir)")
     sub.add_parser("al-dia", help="0 si la instalación corresponde a este paquete; 3 si hay que reinstalar")
     pn = sub.add_parser("iniciar")
     pn.add_argument("--modo", choices=["simulado", "real"], default="simulado")
@@ -687,6 +947,14 @@ def main(argv=None) -> int:
     a = ap.parse_args(argv)
 
     lab = Lab(Path(a.dir))
+    if a.cmd == "previo":
+        r = lab.previo()
+        for x in r["detalle"]:
+            marca = "OK " if x["ok"] else ("ERROR" if x["bloqueante"] else "AVISO")
+            decir(f"  [{marca}] {x['nombre']}: {x['detalle']}")
+        if r["ok"] and r["sobrantes"]:
+            decir(f"  Deteniendo procesos sobrantes del laboratorio: {lab.detener()}")
+        return 0 if r["ok"] else 1
     if a.cmd == "al-dia":
         if not lab.d.exists():
             decir("El laboratorio no está instalado.")
@@ -698,10 +966,14 @@ def main(argv=None) -> int:
         return 3 if m else 0
     validar_carpeta(lab.d, crear=a.cmd == "instalar")
     if a.cmd == "instalar":
-        imprimir("Instalación", lab.instalar(a.sin_venv, a.sin_forms, a.navegador_forms,
-                                             {"monitor": a.fuente_monitor, "forms": a.fuente_forms}))
-        imprimir("Versiones", lab.comprobar_versiones())
-        return 0
+        registrar_en(lab.d / "registros" / f"instalacion-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
+        with Bloqueo(lab.d, "instalar"):
+            res = lab.instalar(a.sin_venv, a.sin_forms, a.navegador_forms,
+                              {"monitor": a.fuente_monitor, "forms": a.fuente_forms})
+        imprimir("Instalación", res)
+        v = lab.comprobar_versiones()
+        imprimir("Versiones", v)
+        return 0 if v["ok"] else 1
     if a.cmd == "comprobar":
         v, p = lab.comprobar_versiones(), lab.comprobar_puertos()
         imprimir("Versiones", v)

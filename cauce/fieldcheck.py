@@ -173,7 +173,7 @@ class _SimLab:
     def service(self, link, req):
         from urllib.parse import parse_qs
         u = urlsplit(req.url)
-        if req.method == "POST" and u.path == "/write":
+        if req.method == "POST" and u.path.endswith("/write"):
             op = parse_qs(u.query).get("op", [None])[0]
             key = req.headers.get("Idempotency-Key") or f"op-{op}"
             self.writes[key] = self.writes.get(key, 0) + 1
@@ -193,7 +193,8 @@ def run(lab_url: str, out_dir: str, simulate: bool = False, ask: Callable[[str],
     if u.scheme not in ("http", "https") or not u.hostname:
         raise SystemExit("--lab-url debe ser http(s)://host:puerto de TU servidor de laboratorio")
     lab_port = u.port or (443 if u.scheme == "https" else 80)
-    base = f"{u.scheme}://{u.hostname}:{lab_port}"
+    # E5: la ruta se conserva: con servidor privado la URL lleva la clave (http://host:8770/<clave>)
+    base = f"{u.scheme}://{u.hostname}:{lab_port}{u.path}"
     rep = Report(simulate)
     data_dir = os.path.join(out_dir, "engine-data")
     fast = simulate

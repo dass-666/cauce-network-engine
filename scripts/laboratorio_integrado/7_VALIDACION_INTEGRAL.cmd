@@ -35,13 +35,23 @@ if "%PERFIL%"=="" (
   if "%OPC%"=="4" set "PERFIL=nocturno"
   if not defined PERFIL set "PERFIL=completo"
 )
+rem E5: comprobacion previa (Python, espacio, permisos, puertos ajenos, otra ejecucion). No cierra nada ajeno.
+echo Comprobacion previa ...
+%PY% lab.py previo
+if errorlevel 1 (
+  echo.
+  echo No se puede empezar: corrige lo marcado como ERROR y vuelve a ejecutar este archivo.
+  if not "%CAUCE_LAB_SIN_PAUSA%"=="1" pause
+  exit /b 2
+)
 %PY% lab.py al-dia
 if errorlevel 3 (
   echo Se instala o actualiza el laboratorio ^(10-20 min la primera vez, necesita internet^).
   %PY% lab.py detener >nul 2>nul
   %PY% lab.py instalar --navegador-forms
   if errorlevel 1 (
-    echo La instalacion fallo. Revisa la salida de arriba.
+    echo La instalacion fallo. Si habia una instalacion anterior, se restauro tal cual.
+    echo Registro detallado: %USERPROFILE%\cauce-lab-integrado\registros\
     if not "%CAUCE_LAB_SIN_PAUSA%"=="1" pause
     exit /b 2
   )
@@ -49,7 +59,7 @@ if errorlevel 3 (
 %PY% integral.py --perfil %PERFIL% %1 %2 %3 %4 %5 %6
 set "RC=%ERRORLEVEL%"
 echo.
-if "%RC%"=="0" (echo Resultado: SIN FALLOS ^(lo PENDIENTE no cuenta como aprobado^)) else (echo Resultado: HAY FALLOS)
+if "%RC%"=="0" (echo Resultado: SIN FALLOS ^(lo PENDIENTE no cuenta como aprobado^)) else (if "%RC%"=="130" (echo Resultado: CANCELADA, informe parcial) else (if "%RC%"=="4" (echo Ya hay otra validacion en marcha en este equipo.) else (echo Resultado: HAY FALLOS)))
 echo Informe: %USERPROFILE%\cauce-lab-integrado\informes\integral-...\INFORME_VALIDACION_INTEGRAL.md
 if not "%CAUCE_LAB_SIN_PAUSA%"=="1" pause
 exit /b %RC%

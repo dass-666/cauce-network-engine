@@ -21,7 +21,7 @@ El token de sesión es `admin`. Además hay credenciales `read` por sistema que 
 
 Sesiones de navegador (rama `feat/sesiones-navegador`): `read` también llega a `GET /status/sessions`. Nueva credencial `session`
 (una por sesión) que solo llega a `POST /sessions`, `POST /sessions/{id}/heartbeat`, `GET` y `DELETE /sessions/{id}` de su propia
-sesión. Contrato completo en [SESIONES_NAVEGADOR.md](SESIONES_NAVEGADOR.md).
+sesión. Contrato completo en [SESIONES_NAVEGADOR.md](SESIONES_NAVEGADOR.md). `POST /sessions/{id}/resolve` (admin) quita `requires_human` tras revisar a mano (§4b).
 
 ## Errores
 

@@ -260,10 +260,12 @@ class CauceSessionClient:
             raise RuntimeError("Primero register()")
         return self.session_id
 
-    def heartbeat(self, ok: bool = True, error_code: Optional[str] = None) -> dict:
+    def heartbeat(self, ok: bool = True, error_code: Optional[str] = None, operation: Optional[str] = None) -> dict:
         body: dict[str, Any] = {"status": "ok" if ok else "error"}
         if not ok:
             body["error_code"] = error_code or "other"
+        if operation is not None:
+            body["operation"] = operation          # "idle" | "in_progress"
         return self._c._call("POST", f"/sessions/{self._sid()}/heartbeat", body)
 
     def get(self) -> dict:
