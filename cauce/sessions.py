@@ -51,7 +51,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .audit import AuditLog
-from .session_store import SessionStore, clean_pending, clean_session
+from .session_store import SessionStore, clean_pending, clean_session, pending_id_for
 
 # Estados globales de una sesión, de mayor a menor prioridad.
 STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
@@ -180,13 +180,14 @@ class SessionRegistry:
         """La sesión se cierra con una marca sin resolver: la marca queda pendiente para su próximo registro.
         Llamar con el lock tomado."""
         if s.requires_human:
-            self._pending.append({"owner_token_id": s.owner_token_id, "label": s.label,
-                                  "reason": s.human_reason or "operation_interrupted", "session_id": s.id, "since": now})
+            p = {"owner_token_id": s.owner_token_id, "label": s.label,
+                 "reason": s.human_reason or "operation_interrupted", "session_id": s.id, "since": now}
+            self._pending.append(dict(p, id=pending_id_for(p)))
 
     def _general_mark(self, reason: str, now: float) -> None:
         if not any(p["reason"] == reason and p["owner_token_id"] is None and p["label"] is None for p in self._pending):
-            self._pending.append({"owner_token_id": None, "label": None, "reason": reason, "session_id": None,
-                                  "since": now})
+            p = {"owner_token_id": None, "label": None, "reason": reason, "session_id": None, "since": now}
+            self._pending.append(dict(p, id=pending_id_for(p)))
 
     def _restore(self) -> None:
         doc, status = self.store.load()
@@ -403,6 +404,44 @@ class SessionRegistry:
         self._save()
         return s
 
+    # --- E7: marcas pendientes sin sesión activa -----------------------------------
+    def pending_view(self, p: dict) -> dict[str, Any]:
+        general = p["owner_token_id"] is None and p["label"] is None
+        return {"id": p["id"], "kind": "general" if general else "session", "label": p["label"],
+                "owner_token_id": p["owner_token_id"], "session_id": p["session_id"], "reason": p["reason"],
+                "age_s": round(max(0.0, self.clock() - p["since"]), 1),
+                # texto que el operador debe escribir para confirmar: evita resolver la marca equivocada
+                "confirm_with": p["label"] if not general else "GENERAL"}
+
+    def pending(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [self.pending_view(p) for p in self._pending]
+
+    def resolve_pending(self, pid: str, body: dict[str, Any], resolved_by: str = "operator") -> dict[str, Any]:
+        """Una PERSONA (credencial admin) da por revisada una marca cuya sesión ya no existe.
+        Exige una nota y repetir la etiqueta (o GENERAL). Nada se repite solo: solo se quita la marca."""
+        note = body.get("note")
+        confirm = body.get("confirm")
+        if not isinstance(note, str) or len(note.strip()) < 5:
+            raise SessionError(400, "note_required", "Escribe qué revisaste (nota de al menos 5 caracteres)")
+        if len(note) > 500:
+            raise SessionError(400, "note_too_long", "La nota admite como máximo 500 caracteres")
+        with self._lock:
+            p = next((x for x in self._pending if x["id"] == pid), None)
+            if p is None:
+                raise SessionError(404, "unknown_pending", "Esa marca no existe o ya se resolvió")
+            v = self.pending_view(p)
+            if confirm != v["confirm_with"]:
+                raise SessionError(409, "confirmation_mismatch",
+                                   f"Para confirmar escribe exactamente: {v['confirm_with']}")
+            self._pending = [x for x in self._pending if x is not p]
+        self.audit.record("session.pending_resolved",
+                          f"Marca pendiente {pid} ({v['label'] or 'general'}): revisada por el operador",
+                          pending_id=pid, label=v["label"], session_id=v["session_id"], reason=v["reason"],
+                          note=note.strip(), resolved_by=resolved_by)
+        self._save(force=True)
+        return {"resolved": pid, "reason": v["reason"], "label": v["label"]}
+
     def get(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
         with self._lock:
             return self._owned(sid, token_id, admin)
@@ -536,7 +575,7 @@ class SessionRegistry:
             return {
                 "max_sessions": self.max_sessions,
                 # marcas de intervención humana de sesiones ya cerradas; se heredan al registrar (sin ids ni dueños)
-                "pending_human_review": [{"label": p["label"], "reason": p["reason"]} for p in self._pending],
+                "pending_human_review": [{"id": p["id"], "label": p["label"], "reason": p["reason"]} for p in self._pending],
                 "sessions": [self.view(s) for s in ss],
                 "closed": [{k: v for k, v in c.items() if k != "closed_at"} | {"closed_age_s": round(self.clock() - c["closed_at"], 1)}
                            for c in self._closed],

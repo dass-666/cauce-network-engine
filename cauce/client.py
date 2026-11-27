@@ -159,6 +159,16 @@ class CauceClient:
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})
 
+    # E7: marcas «revisar a mano» sin sesión activa (solo admin)
+    def pending_reviews(self) -> list[dict]:
+        return self._call("GET", "/sessions/pending")["pending"]
+
+    def resolve_session(self, session_id: str) -> dict:
+        return self._call("POST", f"/sessions/{session_id}/resolve", {})
+
+    def resolve_pending(self, pending_id: str, note: str, confirm: str) -> dict:
+        return self._call("POST", f"/sessions/pending/{pending_id}/resolve", {"note": note, "confirm": confirm})
+
 
 class CauceReadClient:
     """Cliente de SOLO LECTURA para consumidores con una credencial ``read``.
