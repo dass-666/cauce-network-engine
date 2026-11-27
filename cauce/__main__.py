@@ -48,7 +48,7 @@ def _setup_logging(data_dir: str, verbose: bool) -> str:
 def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     from .api import CauceAPI
     from .engine import Engine
-    from .secrets_store import write_secret
+    from .secrets_store import storage_method, write_secret
 
     log_path = _setup_logging(cfg["data_dir"], False)
     log = logging.getLogger("cauce")
@@ -72,11 +72,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     if sim is not None:
         api.enable_sim_control(sim)
     token_path = os.path.join(cfg["data_dir"], "api.token")
-    method = write_secret(token_path, api.token)
     info_path = os.path.join(cfg["data_dir"], "api.json")
-    with open(info_path, "w", encoding="utf-8") as fh:
-        json.dump({"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
-                   "started": time.time(), "token_storage": method}, fh)
+    for p in (token_path, info_path):   # restos de una ejecución que no se cerró bien: no deben parecer «listo»
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
     stop = threading.Event()
 
@@ -91,6 +92,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
 
     engine.start()
     api.start()
+    # Los archivos de descubrimiento se escriben cuando la API ya atiende, cada uno de forma atómica, y
+    # api.token el último: quien espera a que exista api.token encuentra también api.json con el puerto
+    # correcto y una API que responde (antes había una ventana en la que el CLI usaba el puerto por defecto).
+    _write_json_atomic(info_path, {"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
+                                   "started": time.time(), "token_storage": storage_method()})
+    write_secret(token_path, api.token, atomic=True)
     url = f"http://127.0.0.1:{api.port}/?t={api.token}"
     log.info("Cauce %s en modo %s. API: http://127.0.0.1:%s/api/v1  Registro: %s", __version__, mode, api.port, log_path)
     if mode == "simulated":
@@ -112,6 +119,15 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
                 pass
         log.info("Cierre limpio completado.")
     return 0
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _client(cfg: dict):

@@ -44,18 +44,25 @@ def _dpapi(data: bytes, protect: bool) -> bytes:
         kernel32.LocalFree(blob_out.pbData)
 
 
-def write_secret(path: str, value: str) -> str:
+def storage_method() -> str:
+    return "dpapi" if sys.platform == "win32" else "file-0600"
+
+
+def write_secret(path: str, value: str, atomic: bool = False) -> str:
+    """Guarda un secreto. Con atomic=True se escribe en un temporal y se renombra: un lector nunca ve el
+    archivo vacío o a medias (lo usa api.token, que otros procesos esperan como señal de «motor listo»)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     data = value.encode("utf-8")
-    if sys.platform == "win32":
-        payload, method = _MAGIC_DPAPI + _dpapi(data, True), "dpapi"
-    else:
-        payload, method = _MAGIC_PLAIN + data, "file-0600"
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    method = storage_method()
+    payload = _MAGIC_DPAPI + _dpapi(data, True) if method == "dpapi" else _MAGIC_PLAIN + data
+    target = f"{path}.{os.getpid()}.tmp" if atomic else path
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(payload)
         fh.flush()
         os.fsync(fh.fileno())   # el contenido llega al disco antes de que nadie lo dé por guardado
+    if atomic:
+        os.replace(target, path)
     return method
 
 
