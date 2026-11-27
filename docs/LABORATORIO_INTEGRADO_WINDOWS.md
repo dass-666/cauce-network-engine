@@ -25,7 +25,12 @@ Informe: `%USERPROFILE%\cauce-lab-integrado\informes\INFORME_LABORATORIO.md`. Ca
 **SIMULADA**, **LOCAL** (sin cortar la red) o **FÍSICA**.
 
 Python: se recomienda 3.13 (`py -3.13`). Monitor no tiene ruedas para 3.15.
-Forms se instala sin Chromium. Si quieres rellenar formularios de laboratorio con él: `1_INSTALAR.cmd --navegador-forms`.
+Forms se instala sin Chromium. Para probarlo con navegador: `1_INSTALAR.cmd --navegador-forms` (~150 MB, queda dentro de
+`datos\ms-playwright` del laboratorio, no en la caché global de Playwright). Con eso, el paso 2 añade la prueba
+**«Forms con navegador»**: Forms abre con Chromium el formulario de laboratorio que sirve su propia interfaz
+(`http://127.0.0.1:8865/lab/01_tradicional.html`), lo rellena con `sample_data\personas_ficticias.json` y verifica cada
+campo **sin enviarlo**; guarda una captura en `informes\forms_relleno_laboratorio.png`. También comprueba que Forms rechaza
+una dirección de terceros (su lista de dominios permitidos queda vacía en el laboratorio). Por separado: `lab.py prueba-forms`.
 
 ## Qué demuestra cada cosa
 
@@ -35,6 +40,7 @@ Forms se instala sin Chromium. Si quieres rellenar formularios de laboratorio co
 | Diagnóstico | SIMULADA (paso 2) / FÍSICA (paso 3) | Monitor lee a Network Engine con la credencial `read` | — |
 | Network Engine apagado | LOCAL | Monitor sigue funcionando, no muestra nada como sano y se reengancha solo al volver | — |
 | Interrupción y recuperación (paso 2) | SIMULADA | La cadena «Network Engine detecta → Monitor lo muestra» | Que un cable o un teléfono reales se detecten |
+| Forms con navegador (paso 2, con `--navegador-forms`) | LOCAL | Forms rellena y verifica un formulario propio con Chromium mientras los otros dos motores corren; rechaza sitios de terceros | Que el navegador use una conexión concreta: Forms no pasa por Network Engine |
 | Prueba física (paso 3) | FÍSICA | Pérdida y recuperación reales, conmutación de tareas del motor, escrituras exactamente una vez, lo que vive el navegador | Que el navegador conserve la sesión: no puede, ver LIMITACIONES |
 
 ## Si algo falla

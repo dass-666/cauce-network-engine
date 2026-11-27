@@ -92,6 +92,30 @@ class LabIntegradoTest(unittest.TestCase):
             self.assertIn("servidor de laboratorio", r["motivo"])
             lanzar.assert_not_called()
 
+    def test_forms_con_navegador_solo_en_localhost_y_navegador_dentro_del_laboratorio(self):
+        with tempfile.TemporaryDirectory() as d:
+            lab.validar_carpeta(Path(d) / "l", crear=True)
+            lb = lab.Lab(Path(d) / "l")
+            with mock.patch.dict(os.environ, {"PLAYWRIGHT_BROWSERS_PATH": "C:/global", "CAUCE_ALLOWED_HOSTS_FILE": "x"}):
+                env = lb.entorno_forms()
+            self.assertEqual(env["PLAYWRIGHT_BROWSERS_PATH"], str(lb.navegadores))
+            self.assertTrue(str(lb.navegadores).startswith(str(lb.d)))
+            hosts = json.loads(Path(env["CAUCE_ALLOWED_HOSTS_FILE"]).read_text("utf-8"))
+            self.assertEqual(hosts, {"allowed_hosts": []}, "ningún dominio de terceros autorizado")
+            self.assertEqual(env["CAUCE_HEADLESS"], "1")
+
+    def test_forms_sin_chromium_se_omite_y_no_cuenta_como_aprobada(self):
+        with tempfile.TemporaryDirectory() as d:
+            lab.validar_carpeta(Path(d) / "l", crear=True)
+            lb = lab.Lab(Path(d) / "l")
+            lb.forms.mkdir()
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("CAUCE_LAB_BROWSER_PATH", None)
+                r = lb.prueba_forms()
+            self.assertFalse(r["ok"])
+            self.assertTrue(r["omitida"])
+            self.assertIn("--navegador-forms", r["motivo"])
+
     def test_lanzadores_ascii_crlf(self):
         for f in (RAIZ / "scripts" / "laboratorio_integrado").glob("*.cmd"):
             b = f.read_bytes()

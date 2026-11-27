@@ -149,6 +149,10 @@ class Lab:
     def forms(self) -> Path:
         return self.d / "forms"
 
+    @property
+    def navegadores(self) -> Path:
+        return self.d / "datos" / "ms-playwright"
+
     def datos(self, *p) -> Path:
         r = self.d / "datos" / Path(*p)
         r.parent.mkdir(parents=True, exist_ok=True)
@@ -215,7 +219,10 @@ class Lab:
             if not sin_venv:
                 self._venv("forms", "requirements.txt")
                 if navegador_forms:
-                    subprocess.run([self.py("forms"), "-m", "playwright", "install", "chromium"], check=False)
+                    # Chromium dentro de la carpeta del laboratorio, no en la caché global de Playwright del usuario.
+                    r = subprocess.run([self.py("forms"), "-m", "playwright", "install", "chromium"], check=False,
+                                       env=entorno_limpio({"PLAYWRIGHT_BROWSERS_PATH": str(self.navegadores)}))
+                    self.estado["navegador_forms"] = r.returncode == 0
         self.estado.update({"instalado": ahora(), "commits": commits, "forms": not sin_forms})
         self.estado.setdefault("monitor_admin", secrets.token_urlsafe(14))      # solo laboratorio, datos ficticios
         self.guardar()
@@ -506,6 +513,57 @@ class Lab:
         return self.resultado("interrupcion", {"ok": all(p["ok"] for p in pasos),
                                                "evidencia": "SIMULADA (no vale como validación física)", "pasos": pasos})
 
+    def entorno_forms(self) -> dict[str, str]:
+        hosts = self.datos("forms", "allowed_hosts.json")
+        hosts.write_text(json.dumps({"allowed_hosts": []}), "utf-8")      # solo 127.0.0.1/localhost: nada de terceros
+        extra = {"CAUCE_AUDIT_PATH": str(self.datos("forms", "audit.jsonl")),
+                 "CAUCE_PROFILES_DIR": str(self.datos("forms", "profiles", "x").parent),
+                 "CAUCE_ALLOWED_HOSTS_FILE": str(hosts), "CAUCE_HEADLESS": "1",
+                 "PLAYWRIGHT_BROWSERS_PATH": str(self.navegadores)}
+        if os.environ.get("CAUCE_LAB_BROWSER_PATH"):                    # solo pruebas automáticas: un Chromium ya instalado
+            extra["CAUCE_BROWSER_PATH"] = os.environ["CAUCE_LAB_BROWSER_PATH"]
+        return entorno_limpio(extra)
+
+    def _forms_cli(self, *args: str, timeout: float = 180) -> tuple[int, object, str]:
+        r = subprocess.run([self.py("forms"), "-m", "cauce_form_connector", *args], cwd=str(self.forms),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", env=self.entorno_forms(),
+                           timeout=timeout)
+        try:
+            datos = json.loads(r.stdout) if r.stdout.strip() else None
+        except ValueError:
+            datos = None
+        return r.returncode, datos, (r.stderr or "")[-400:]
+
+    def prueba_forms(self) -> dict:
+        """Forms con navegador real SOLO sobre el portal de laboratorio que sirve su propia interfaz (127.0.0.1),
+        con datos ficticios. `fill` nunca envía el formulario."""
+        if not (self.estado.get("forms", True) and self.forms.exists()):
+            return self.resultado("forms_navegador", {"ok": False, "motivo": "Forms no está instalado en el laboratorio"})
+        if not (self.estado.get("navegador_forms") or os.environ.get("CAUCE_LAB_BROWSER_PATH")):
+            return self.resultado("forms_navegador", {"ok": False, "omitida": True, "motivo":
+                                  "sin Chromium para Forms: ejecuta 1_INSTALAR.cmd --navegador-forms"})
+        if puerto_libre(self.p["forms"]):
+            return self.resultado("forms_navegador", {"ok": False, "motivo": "inicia el laboratorio primero"})
+        url = f"http://127.0.0.1:{self.p['forms']}/lab/01_tradicional.html"
+        pasos = []
+        rc, _, err = self._forms_cli("analyze", "--url", "https://example.com/formulario", "--authorized")
+        pasos.append({"paso": "Forms rechaza un sitio de terceros no autorizado (no navega)", "ok": rc == 3, "rc": rc})
+        rc, an, err = self._forms_cli("analyze", "--url", url)
+        campos = len((an or {}).get("all_fields") or [c for f in (an or {}).get("forms") or [] for c in f.get("fields") or []])
+        pasos.append({"paso": "Forms abre el portal de laboratorio con Chromium y detecta campos", "ok": rc == 0 and campos > 0,
+                      "rc": rc, "campos": campos, **({"error": err} if rc else {})})
+        captura = self.d / "informes" / "forms_relleno_laboratorio.png"
+        captura.parent.mkdir(parents=True, exist_ok=True)
+        datos = str(self.forms / "sample_data" / "personas_ficticias.json")
+        rc, rel, err = self._forms_cli("fill", "--url", url, "--data", datos, "--row", "0", "--screenshot", str(captura))
+        rel = rel if isinstance(rel, dict) else {}
+        pasos.append({"paso": "Forms rellena el formulario de laboratorio con datos ficticios y lo verifica (sin enviar)",
+                      "ok": rc == 0, "rc": rc, "codigo": rel.get("codigo"), "verificado": rel.get("ok"),
+                      "captura": str(captura) if captura.exists() else None, **({"error": err} if rc not in (0, 2, 4) else {})})
+        return self.resultado("forms_navegador", {"ok": all(p["ok"] for p in pasos),
+                                                  "evidencia": "LOCAL (portal propio de laboratorio, datos ficticios, sin envío)",
+                                                  "pasos": pasos})
+
     # -------------------------------------------------------------------- informe
     def informe(self) -> Path:
         r = self.estado.get("resultados") or {}
@@ -516,11 +574,13 @@ class Lab:
                "", "| Prueba | Resultado | Cuándo | Evidencia |", "|---|---|---|---|"]
         nombres = {"instalacion": "Instalación", "versiones": "Versiones compatibles", "puertos": "Puertos",
                    "inicio": "Inicio de servicios", "diagnostico": "Diagnóstico de conectividad",
-                   "ne_apagado": "Monitor con Network Engine apagado", "interrupcion": "Interrupción y recuperación"}
+                   "ne_apagado": "Monitor con Network Engine apagado", "interrupcion": "Interrupción y recuperación",
+                   "forms_navegador": "Forms con navegador en el portal de laboratorio"}
         for k, n in nombres.items():
             x = r.get(k)
             if x:
-                lin.append(f"| {n} | {'PASA' if x.get('ok') else 'FALLA'} | {x.get('cuando')} | {x.get('evidencia', '—')} |")
+                res = "OMITIDA" if x.get("omitida") else ("PASA" if x.get("ok") else "FALLA")
+                lin.append(f"| {n} | {res} | {x.get('cuando')} | {x.get('evidencia', '—')} |")
             else:
                 lin.append(f"| {n} | no ejecutada | — | — |")
         lin += ["", "## Detalle", "", "```json", json.dumps(r, indent=2, ensure_ascii=False), "```", ""]
@@ -562,6 +622,7 @@ def main(argv=None) -> int:
     sub.add_parser("prueba-ne-apagado")
     pr = sub.add_parser("prueba-interrupcion")
     pr.add_argument("--steps", type=int, default=240)
+    sub.add_parser("prueba-forms", help="Forms con Chromium en el portal de laboratorio (127.0.0.1), datos ficticios")
     sub.add_parser("informe")
     sub.add_parser("detener")
     pt = sub.add_parser("todo", help="comprobar, iniciar, diagnóstico, pruebas e informe (deja los servicios en marcha)")
@@ -592,8 +653,12 @@ def main(argv=None) -> int:
         imprimir("Diagnóstico", lab.diagnostico())
         imprimir("Monitor con Network Engine apagado", lab.prueba_ne_apagado())
         imprimir("Interrupción y recuperación", lab.prueba_interrupcion(240))
+        rf = lab.prueba_forms()
+        imprimir("Forms con navegador (portal de laboratorio)", rf if not rf.get("omitida") else {**rf, "ok": False})
+        if rf.get("omitida"):
+            decir(f"  (omitida: {rf['motivo']})")
         decir(f"\nInforme: {lab.informe()}")
-        return 0 if all(x.get("ok") for x in lab.estado["resultados"].values()) else 1
+        return 0 if all(x.get("ok") or x.get("omitida") for x in lab.estado["resultados"].values()) else 1
     if a.cmd == "abrir":
         lab.abrir()
         return 0
@@ -608,6 +673,12 @@ def main(argv=None) -> int:
     if a.cmd == "prueba-interrupcion":
         r = lab.prueba_interrupcion(a.steps)
         imprimir("Interrupción y recuperación", r)
+        return 0 if r["ok"] else 1
+    if a.cmd == "prueba-forms":
+        r = lab.prueba_forms()
+        imprimir("Forms con navegador (portal de laboratorio)", r)
+        if r.get("motivo"):
+            decir(f"  {r['motivo']}")
         return 0 if r["ok"] else 1
     if a.cmd == "informe":
         decir(f"Informe: {lab.informe()}")

@@ -53,10 +53,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: 1_INSTALAR.cmd (descarga Monitor y Forms en los commits fijados)
+      - name: 1_INSTALAR.cmd --navegador-forms (descarga Monitor y Forms en los commits fijados y Chromium para Forms)
         shell: cmd
-        run: scripts\laboratorio_integrado\1_INSTALAR.cmd
-      - name: 2_INICIAR_Y_PROBAR.cmd (versiones, puertos, inicio, diagnóstico, NE apagado, interrupción)
+        run: scripts\laboratorio_integrado\1_INSTALAR.cmd --navegador-forms
+      - name: 2_INICIAR_Y_PROBAR.cmd (versiones, puertos, inicio, diagnóstico, NE apagado, interrupción, Forms con navegador)
         shell: cmd
         run: scripts\laboratorio_integrado\2_INICIAR_Y_PROBAR.cmd --no-abrir
       - name: Los tres puertos del laboratorio responden a la vez
