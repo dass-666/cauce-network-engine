@@ -1,0 +1,256 @@
+"""Seguimiento de ESTADO de sesiones de navegador autorizadas (solo observación).
+
+Qué hace:
+- Un sistema externo (p. ej. Cauce Forms) registra una sesión de navegador que el
+  usuario declara autorizada y envía "latidos" (heartbeats) periódicos con un estado
+  mínimo: ``ok`` o ``error`` + un código de una lista cerrada.
+- El motor combina ese latido con el estado de red que YA mide (salud de la conexión
+  indicada o, si no se indica, la conectividad global) y calcula un estado por sesión.
+- Cada cambio de estado se anota en la auditoría (``session.state``), visible para
+  Monitor por ``/status/events``.
+
+Qué NO hace (a propósito):
+- No abre, controla ni automatiza navegadores; no envía formularios ni reservas.
+- No encamina el tráfico del navegador por ninguna conexión: el navegador usa la ruta
+  del sistema operativo. ``connection_id`` es solo la conexión de la que la sesión
+  DEPENDE según quien la registra, para atribuirle el estado de red correcto.
+- No asigna IP distintas a cada sesión ni rota direcciones.
+- No recibe URL, cookies, contenido de páginas ni datos de formularios: el latido
+  rechaza cualquier campo que no esté en la lista blanca.
+
+Aislamiento:
+- Cada sesión pertenece a la credencial ``session`` que la registró (una credencial =
+  una sesión activa). Otra credencial no puede verla en detalle, enviarle latidos ni
+  cerrarla (403 ``not_session_owner``).
+- El estado de una sesión se calcula solo con SUS latidos y SU conexión: un fallo en
+  otra sesión o en otra conexión no la modifica (lo comprueban las pruebas).
+- Las sesiones viven en memoria: si el motor se reinicia, desaparecen y el sistema
+  dueño debe volver a registrarlas (recibe 404 ``unknown_session``).
+"""
+from __future__ import annotations
+
+import re
+import secrets
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+from .audit import AuditLog
+
+# Estados globales de una sesión, de mayor a menor prioridad.
+STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
+ERROR_CODES = ("page_unreachable", "navigation_timeout", "browser_closed", "session_expired", "network_error", "other")
+HEARTBEAT_FIELDS = {"status", "error_code"}
+REGISTER_FIELDS = {"label", "connection_id", "authorized_by_user", "heartbeat_timeout_s"}
+HARD_MAX_SESSIONS = 8
+MIN_HEARTBEAT_INTERVAL_S = 0.5     # latidos más frecuentes se rechazan (429)
+STABILITY_WINDOW_S = 600.0
+_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
+
+
+class SessionError(Exception):
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+@dataclass
+class BrowserSession:
+    id: str
+    label: str
+    owner_token_id: str
+    owner_name: str
+    connection_id: Optional[str]
+    heartbeat_timeout_s: float
+    registered_at: float
+    last_heartbeat: Optional[float] = None
+    reported: Optional[str] = None          # ok | error
+    error_code: Optional[str] = None
+    heartbeats: int = 0
+    state: str = "pending"
+    reason: Optional[str] = None
+    state_since: float = 0.0
+    changes: deque = field(default_factory=lambda: deque(maxlen=200))   # instantes de cambio de estado
+    network_state: str = "unknown"
+
+
+# Función que devuelve el estado de red de una conexión (o global si es None):
+# "ok" | "degraded" | "down" | "unknown"
+NetworkStateFn = Callable[[Optional[str]], str]
+
+
+class SessionRegistry:
+    def __init__(self, audit: AuditLog, network_state: NetworkStateFn,
+                 connection_exists: Callable[[str], bool], max_sessions: int = 2,
+                 default_timeout_s: float = 30.0, clock: Callable[[], float] = time.time):
+        if not (1 <= max_sessions <= HARD_MAX_SESSIONS):
+            raise ValueError(f"sessions.max debe estar entre 1 y {HARD_MAX_SESSIONS}")
+        self.audit = audit
+        self.network_state = network_state
+        self.connection_exists = connection_exists
+        self.max_sessions = max_sessions
+        self.default_timeout_s = default_timeout_s
+        self.clock = clock
+        self._lock = threading.RLock()
+        self._sessions: dict[str, BrowserSession] = {}
+
+    # --- registro ---------------------------------------------------------
+    def register(self, owner_token_id: str, owner_name: str, body: dict[str, Any]) -> BrowserSession:
+        extra = sorted(set(body) - REGISTER_FIELDS)
+        if extra:
+            raise SessionError(400, "unsupported_field", f"Campo no admitido: {', '.join(extra)}")
+        if body.get("authorized_by_user") is not True:
+            raise SessionError(400, "authorization_not_declared",
+                               "authorized_by_user debe ser true: solo se registran sesiones que el usuario declara autorizadas")
+        label = str(body.get("label") or "")
+        if not _LABEL_RE.match(label):
+            raise SessionError(400, "invalid_label", "label: 2-32 caracteres, minúsculas, dígitos, '-' o '_'")
+        cid = body.get("connection_id")
+        if cid is not None:
+            cid = str(cid)
+            if not self.connection_exists(cid):
+                raise SessionError(404, "unknown_connection", "Conexión inexistente")
+        timeout = float(body.get("heartbeat_timeout_s", self.default_timeout_s))
+        if not (5.0 <= timeout <= 300.0):
+            raise SessionError(400, "invalid_request", "heartbeat_timeout_s debe estar entre 5 y 300")
+        now = self.clock()
+        with self._lock:
+            if any(s.owner_token_id == owner_token_id for s in self._sessions.values()):
+                raise SessionError(409, "credential_has_session",
+                                   "Esta credencial ya tiene una sesión activa (una credencial = una sesión)")
+            if any(s.label == label for s in self._sessions.values()):
+                raise SessionError(409, "label_in_use", "Ya existe una sesión con esa etiqueta")
+            if len(self._sessions) >= self.max_sessions:
+                raise SessionError(409, "too_many_sessions", f"Máximo {self.max_sessions} sesiones")
+            s = BrowserSession(id="bs_" + secrets.token_hex(6), label=label, owner_token_id=owner_token_id,
+                               owner_name=owner_name, connection_id=cid, heartbeat_timeout_s=timeout,
+                               registered_at=now, state_since=now)
+            self._sessions[s.id] = s
+        self.audit.record("session.registered", f"Sesión de navegador registrada: {label}",
+                          session_id=s.id, label=label, connection_id=cid, registered_by=owner_name)
+        self.evaluate()
+        return s
+
+    def _owned(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
+        s = self._sessions.get(sid)
+        if not s:
+            raise SessionError(404, "unknown_session", "Sesión inexistente (¿se reinició el motor?)")
+        if not admin and s.owner_token_id != token_id:
+            raise SessionError(403, "not_session_owner", "Esta sesión pertenece a otra credencial")
+        return s
+
+    def heartbeat(self, sid: str, token_id: str, body: dict[str, Any]) -> BrowserSession:
+        extra = sorted(set(body) - HEARTBEAT_FIELDS)
+        if extra:
+            raise SessionError(400, "unsupported_field",
+                               f"Campo no admitido en el latido: {', '.join(extra)} (no se aceptan URL, cookies ni datos de página)")
+        status = body.get("status")
+        if status not in ("ok", "error"):
+            raise SessionError(400, "invalid_request", "status debe ser 'ok' o 'error'")
+        code = body.get("error_code")
+        if status == "ok" and code is not None:
+            raise SessionError(400, "invalid_request", "error_code solo se admite con status 'error'")
+        if status == "error" and code not in ERROR_CODES:
+            raise SessionError(400, "invalid_error_code", f"error_code debe ser uno de: {', '.join(ERROR_CODES)}")
+        now = self.clock()
+        with self._lock:
+            s = self._owned(sid, token_id)
+            if s.last_heartbeat is not None and now - s.last_heartbeat < MIN_HEARTBEAT_INTERVAL_S:
+                raise SessionError(429, "heartbeat_too_frequent",
+                                   f"Latidos como máximo cada {MIN_HEARTBEAT_INTERVAL_S} s")
+            s.last_heartbeat, s.reported, s.error_code = now, status, code
+            s.heartbeats += 1
+        self.evaluate()
+        return s
+
+    def close(self, sid: str, token_id: str, admin: bool = False, reason: str = "cerrada por su dueño") -> dict:
+        with self._lock:
+            s = self._owned(sid, token_id, admin)
+            del self._sessions[sid]
+        self.audit.record("session.closed", f"Sesión de navegador cerrada: {s.label} ({reason})",
+                          session_id=s.id, label=s.label)
+        return {"closed": s.id}
+
+    def get(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
+        with self._lock:
+            return self._owned(sid, token_id, admin)
+
+    def all(self) -> list[BrowserSession]:
+        with self._lock:
+            return sorted(self._sessions.values(), key=lambda s: s.label)
+
+    # --- cálculo de estado --------------------------------------------------
+    def _compute(self, s: BrowserSession, now: float) -> tuple[str, Optional[str], str]:
+        net = self.network_state(s.connection_id)
+        if s.connection_id is not None and not self.connection_exists(s.connection_id):
+            net = "down"
+        ref = s.last_heartbeat if s.last_heartbeat is not None else s.registered_at
+        if now - ref > s.heartbeat_timeout_s:
+            return "stale", "no_heartbeat" if s.last_heartbeat is None else "heartbeat_timeout", net
+        if net == "down":
+            return "network_down", "connection_down" if s.connection_id else "no_usable_connection", net
+        if s.reported == "error":
+            return "browser_error", s.error_code, net
+        if s.last_heartbeat is None:
+            return "pending", "awaiting_first_heartbeat", net
+        if net == "unknown":
+            return "network_unknown", "insufficient_measurements", net
+        if net == "degraded":
+            return "network_degraded", None, net
+        return "active", None, net
+
+    def evaluate(self) -> None:
+        """Recalcula todas las sesiones y anota cada transición. Barato: no hace E/S de red."""
+        now = self.clock()
+        changes = []
+        with self._lock:
+            for s in self._sessions.values():
+                state, reason, net = self._compute(s, now)
+                s.network_state = net
+                if state != s.state or reason != s.reason:
+                    old = s.state
+                    if state != old:
+                        s.state_since = now
+                        s.changes.append(now)
+                        changes.append((s.id, s.label, old, state, reason))
+                    s.state, s.reason = state, reason
+        for sid, label, old, new, reason in changes:
+            self.audit.record("session.state", f"Sesión {label}: {old} -> {new}",
+                              session_id=sid, old=old, new=new, reason=reason)
+
+    # --- vistas -------------------------------------------------------------
+    def view(self, s: BrowserSession) -> dict[str, Any]:
+        """Lista blanca de campos. No incluye el id de la credencial dueña. Usa el mismo reloj que el registro."""
+        now = self.clock()
+        recent = sum(1 for t in s.changes if now - t <= STABILITY_WINDOW_S)
+        return {
+            "id": s.id,
+            "label": s.label,
+            "registered_by": s.owner_name,
+            "state": s.state,
+            "reason": s.reason,
+            "state_since_s": round(now - s.state_since, 1),
+            "network": {"source": "connection" if s.connection_id else "global",
+                        "connection_id": s.connection_id, "state": s.network_state},
+            "heartbeat": {"last_age_s": None if s.last_heartbeat is None else round(now - s.last_heartbeat, 1),
+                          "timeout_s": s.heartbeat_timeout_s, "reported": s.reported,
+                          "error_code": s.error_code, "count": s.heartbeats},
+            "stability": {"state_changes_10m": recent, "state_changes_total": len(s.changes)},
+        }
+
+    def summary(self) -> dict[str, Any]:
+        with self._lock:
+            ss = self.all()
+            conns = [s.connection_id for s in ss if s.connection_id]
+            return {
+                "max_sessions": self.max_sessions,
+                "sessions": [self.view(s) for s in ss],
+                "isolation": {
+                    # siempre true por diseño (registro rechaza lo contrario); se expone para que Monitor lo vigile
+                    "one_credential_per_session": len({s.owner_token_id for s in ss}) == len(ss),
+                    # informativo: dos sesiones que dependen de la misma conexión caen a la vez si esta cae
+                    "shared_connection": len(conns) != len(set(conns)),
+                },
+            }

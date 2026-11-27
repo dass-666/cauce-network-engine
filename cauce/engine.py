@@ -16,6 +16,7 @@ from .models import Connection, Health, TERMINAL_TASK_STATES
 from .net import Network
 from .policy import RotationController
 from .routing import RouteError, RouteManager
+from .sessions import SessionRegistry
 
 
 def _mac_key(mac: Optional[str]) -> Optional[str]:
@@ -56,6 +57,11 @@ class Engine:
         self.routers = build_observers(cfg.get("routers") or [], self.audit)
         self.executor = TaskExecutor(network, self.routes, self.health, self.rotation, self.audit, self.connection)
         self.health.on_change(self._on_health_change)
+        sc = cfg.get("sessions") or {}
+        self.sessions = SessionRegistry(self.audit, self._session_network_state,
+                                        lambda cid: self.connection(cid) is not None,
+                                        max_sessions=int(sc.get("max", 2)),
+                                        default_timeout_s=float(sc.get("heartbeat_timeout_s", 30.0)))
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
@@ -114,6 +120,7 @@ class Engine:
             elif (prev.link, prev.ipv4, prev.gateway) != (c.link, c.ipv4, c.gateway):
                 self.audit.record("inventory.changed", f"Cambio en {c.name}: enlace {prev.link.value}->{c.link.value}, IP {prev.primary_ip}->{c.primary_ip}",
                                   connection_id=c.id)
+        self.sessions.evaluate()
         return kept
 
     def _apply_egress_check(self, conns: list[Connection]) -> None:
@@ -156,8 +163,27 @@ class Engine:
         d["active_leases"] = sum(1 for l in self.routes.leases() if l.connection_id == c.id)
         return d
 
+    def _session_network_state(self, conn_id: Optional[str]) -> str:
+        """Estado de red atribuible a una sesión: "ok" | "degraded" | "down" | "unknown".
+        Solo lee el estado en memoria (no lanza sondeos)."""
+        if conn_id is None:
+            from .status import connectivity_view
+            st = connectivity_view(self, time.time())["state"]
+            return {"usable": "ok", "degraded": "degraded", "unknown": "unknown"}.get(st, "down")
+        c = self.connection(conn_id)
+        if c is None or not c.usable:
+            return "down"
+        h = self.health.state_of(conn_id)
+        return {Health.HEALTHY: "ok", Health.DEGRADED: "degraded", Health.DOWN: "down"}.get(h, "unknown")
+
     # --- reacción a cambios de salud -------------------------------------
     def _on_health_change(self, conn_id: str, old: Health, new: Health) -> None:
+        try:
+            self._react_health(conn_id, old, new)
+        finally:
+            self.sessions.evaluate()
+
+    def _react_health(self, conn_id: str, old: Health, new: Health) -> None:
         if new == Health.DOWN:
             for lease in self.routes.leases():
                 if lease.connection_id == conn_id:
@@ -245,6 +271,7 @@ class Engine:
             "audit_last_seq": self.audit.last_seq,
             "rotation_enabled": self.rotation_enabled,
             "routers": len(self.routers),
+            "browser_sessions": len(self.sessions.all()),
             "global_routes_modified": False,  # el motor nunca modifica la tabla de rutas
             "note": "Simulación: no prueba hardware real" if self.mode == "simulated" else None,
         }
@@ -282,6 +309,10 @@ class Engine:
                     rw.poll()
                 except Exception as e:  # noqa: BLE001
                     self.audit.record("error", f"Fallo en observación de router: {e!r}")
+            try:
+                self.sessions.evaluate()
+            except Exception as e:
+                self.audit.record("error", f"Fallo al evaluar sesiones: {e!r}")
             try:
                 self.rotation.tick()
             except Exception as e:

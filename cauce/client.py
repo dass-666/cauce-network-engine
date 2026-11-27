@@ -205,6 +205,10 @@ class CauceReadClient:
     def events(self, since: int = 0, limit: int = 200) -> dict:
         return self._c._call("GET", f"/status/events?since={int(since)}&limit={int(limit)}")
 
+    def sessions(self) -> dict:
+        """Estado de las sesiones de navegador registradas (``cauce.sessions/1``)."""
+        return self._c._call("GET", "/status/sessions")
+
     def connectivity_or_unknown(self) -> dict:
         if self.halted is not None:
             raise self.halted                       # sin tocar la red: reintentar una credencial rota no la arregla
@@ -224,3 +228,48 @@ class CauceReadClient:
     def _unknown(reason: str) -> dict:
         return {"schema": "cauce.connectivity/1", "state": "engine_unreachable", "usable": None,
                 "reason": reason, "connections": []}
+
+
+class CauceSessionClient:
+    """Cliente para el DUEÑO de una sesión de navegador (p. ej. Cauce Forms), con una credencial ``session``.
+
+    Solo informa estado: registrar la sesión, enviar latidos ``ok``/``error`` y cerrarla.
+    El motor rechaza cualquier dato extra (URL, cookies, contenido de páginas): no los envíes.
+    Una credencial solo puede tener UNA sesión activa; usa una credencial distinta por sesión.
+    """
+
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 2.0):
+        self._c = CauceClient(token, host, port, timeout)
+        self.session_id: Optional[str] = None
+
+    @classmethod
+    def from_token_file(cls, token_path: str, port: int = DEFAULT_API_PORT, **kw) -> "CauceSessionClient":
+        from .secrets_store import read_secret
+        return cls(read_secret(token_path), port=port, **kw)
+
+    def register(self, label: str, connection_id: Optional[str] = None, heartbeat_timeout_s: float = 30.0) -> dict:
+        body = {"label": label, "authorized_by_user": True, "heartbeat_timeout_s": heartbeat_timeout_s}
+        if connection_id is not None:
+            body["connection_id"] = connection_id
+        out = self._c._call("POST", "/sessions", body)
+        self.session_id = out["id"]
+        return out
+
+    def _sid(self) -> str:
+        if not self.session_id:
+            raise RuntimeError("Primero register()")
+        return self.session_id
+
+    def heartbeat(self, ok: bool = True, error_code: Optional[str] = None) -> dict:
+        body: dict[str, Any] = {"status": "ok" if ok else "error"}
+        if not ok:
+            body["error_code"] = error_code or "other"
+        return self._c._call("POST", f"/sessions/{self._sid()}/heartbeat", body)
+
+    def get(self) -> dict:
+        return self._c._call("GET", f"/sessions/{self._sid()}")
+
+    def close(self) -> dict:
+        out = self._c._call("DELETE", f"/sessions/{self._sid()}")
+        self.session_id = None
+        return out

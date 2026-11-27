@@ -40,6 +40,8 @@ DEFAULTS: dict[str, Any] = {
         "exclude": [],          # nombres o ids de conexiones que el motor NUNCA usa
         "only": [],             # si no está vacío, solo se gestionan estas
     },
+    # Seguimiento de sesiones de navegador autorizadas (solo estado; ver cauce/sessions.py)
+    "sessions": {"max": 2, "heartbeat_timeout_s": 30.0},
     "egress_check_url": None,   # URL propia que devuelve la IP pública (opcional)
     "data_dir": None,
 }
@@ -99,6 +101,11 @@ def validate(cfg: dict) -> dict:
         raise ConfigError("lab.rotation_enabled debe ser true o false")
     from .routers import validate_router_config
     validate_router_config(cfg.get("routers") or [])
+    sc = cfg["sessions"]
+    if not (1 <= int(sc["max"]) <= 8):
+        raise ConfigError("sessions.max debe estar entre 1 y 8")
+    if not (5 <= float(sc["heartbeat_timeout_s"]) <= 300):
+        raise ConfigError("sessions.heartbeat_timeout_s debe estar entre 5 y 300")
     cfg["data_dir"] = cfg.get("data_dir") or default_data_dir()
     return cfg
 

@@ -7,6 +7,9 @@
 
 ## 0. Regla de oro
 
+> Rama `feat/sesiones-navegador`: se añade `GET /api/v1/status/sessions` (estado de las sesiones de navegador). Contrato en
+> [SESIONES_NAVEGADOR.md](SESIONES_NAVEGADOR.md) §4. Lo demás de esta guía no cambia.
+
 Monitor **solo** puede usar `GET /api/v1/status/connectivity` y `GET /api/v1/status/events`, con una credencial `read` propia.
 No usar nunca el token de administración (`api.token`), ni `/connections`, `/events`, `/diagnostics`, `/routes`, etc. (devuelven 403 y contienen MAC/IP).
 La pregunta que responde esta vista es: *«¿tiene este equipo alguna conexión utilizable según Network Engine?»*. No sirve para
