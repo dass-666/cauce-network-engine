@@ -41,3 +41,43 @@ jobs:
         with:
           name: reports-${{ matrix.os }}-${{ matrix.python }}
           path: reports/
+  laboratorio-integrado:
+    # Los tres motores a la vez en Windows con los lanzadores reales del paquete (red SIMULADA: no es validación física).
+    name: Laboratorio integrado · Windows (Monitor + Forms + Network Engine)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: 1_INSTALAR.cmd (descarga Monitor y Forms en los commits fijados)
+        shell: cmd
+        run: scripts\laboratorio_integrado\1_INSTALAR.cmd
+      - name: 2_INICIAR_Y_PROBAR.cmd (versiones, puertos, inicio, diagnóstico, NE apagado, interrupción)
+        shell: cmd
+        run: scripts\laboratorio_integrado\2_INICIAR_Y_PROBAR.cmd --no-abrir
+      - name: Los tres puertos del laboratorio responden a la vez
+        shell: pwsh
+        run: |
+          foreach ($p in 8100, 8865, 8880) {
+            $ok = (Test-NetConnection -ComputerName 127.0.0.1 -Port $p -WarningAction SilentlyContinue).TcpTestSucceeded
+            Write-Output "puerto $p : $ok"
+            if (-not $ok) { exit 1 }
+          }
+      - name: 4_DETENER.cmd y comprobar que se soltaron los puertos
+        if: always()
+        shell: cmd
+        run: |
+          call scripts\laboratorio_integrado\4_DETENER.cmd
+          call scripts\laboratorio_integrado\DIAGNOSTICO.cmd
+          exit /b 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: laboratorio-integrado-windows
+          path: |
+            ~/cauce-lab-integrado/informes/
+            ~/cauce-lab-integrado/datos/logs/
