@@ -215,7 +215,30 @@ class Lab:
         self.d = d
         self.p = {k: v + desplazamiento_puertos() for k, v in VERSIONES["puertos"].items()}
         self.estado_f = d / "estado.json"
-        self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
+        self.estado = self._leer_estado()
+
+    def _leer_estado(self) -> dict:
+        """estado.json ilegible (apagado a mitad de escritura, editado a mano...) no debe reventar con una traza
+        (E6, demostrado). Se aparta como .corrupt-<fecha> para que nadie lo pierda y se sigue con un estado vacío:
+        al-dia pedirá reinstalar (salida 3) y previo lo avisará."""
+        if not self.estado_f.exists():
+            return {}
+        try:
+            r = json.loads(self.estado_f.read_text("utf-8"))
+            if isinstance(r, dict):
+                return r
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+        base = f"{self.estado_f.name}.corrupt-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        destino, n = self.estado_f.with_name(base), 1
+        while destino.exists():                     # en Windows rename no sobrescribe
+            destino, n = self.estado_f.with_name(f"{base}-{n}"), n + 1
+        try:
+            self.estado_f.rename(destino)
+            decir(f"  AVISO: {self.estado_f.name} estaba dañado; se apartó como {destino.name}. Hay que reinstalar.")
+        except OSError:
+            decir(f"  AVISO: {self.estado_f.name} está dañado y no se pudo apartar. Hay que reinstalar.")
+        return {}
 
     # -------------------------------------------------------------------- rutas
     @property
@@ -287,9 +310,10 @@ class Lab:
     def instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
         """E5: si ya había una instalación, se aparta en .anterior y se restaura si la nueva falla a medias."""
         anterior = self.d / ".anterior"
-        if anterior.exists() and self.estado.get("instalacion_en_curso") and any(anterior.iterdir()):
-            # E6: una instalación anterior se cortó de golpe (apagado, proceso matado) y dejó aquí la buena:
-            # se devuelve a su sitio ANTES de empezar, para no perderla si esta también falla.
+        if anterior.exists() and any(anterior.iterdir()):
+            # E6: .anterior solo existe mientras se instala. Si está aquí, una instalación se cortó de golpe
+            # (apagado, proceso matado, restauración a medias) y dejó la buena: se devuelve a su sitio ANTES de
+            # empezar, para no perderla si esta también falla.
             self._restaurar_anterior(anterior)
             decir("  Se encontró una instalación cortada: se recuperó la anterior antes de reinstalar.")
         elif anterior.exists():
@@ -317,16 +341,31 @@ class Lab:
             shutil.rmtree(anterior, ignore_errors=True)
         return r
 
-    def _restaurar_anterior(self, anterior: Path) -> None:
-        for x in (self.ne, self.monitor, self.forms, self.estado_f):   # lo instalado a medias se quita entero
+    @staticmethod
+    def _quitar(x: Path) -> None:
+        """Quita lo instalado a medias. Tras un Ctrl+C, pip (o su hijo) puede seguir escribiendo un instante y
+        rmtree deja la carpeta a medio borrar (E6, demostrado): se reintenta y, si no se puede, se aparta."""
+        for _ in range(20):
             if x.is_dir():
                 shutil.rmtree(x, ignore_errors=True)
             elif x.exists():
-                x.unlink()
-        for x in anterior.iterdir():
+                try:
+                    x.unlink()
+                except OSError:
+                    pass
+            if not x.exists():
+                return
+            time.sleep(0.25)
+        x.rename(x.with_name(f"{x.name}.a-medias-{dt.datetime.now().strftime('%Y%m%d-%H%M%S')}"))
+
+    def _restaurar_anterior(self, anterior: Path) -> None:
+        for x in (self.ne, self.monitor, self.forms, self.estado_f):   # lo instalado a medias se quita entero
+            if (anterior / x.name).exists() or x != self.estado_f:
+                self._quitar(x)
+        for x in list(anterior.iterdir()):
             x.rename(self.d / x.name)
         shutil.rmtree(anterior, ignore_errors=True)
-        self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
+        self.estado = self._leer_estado()
 
     def _instalar(self, sin_venv: bool, sin_forms: bool, navegador_forms: bool, fuentes: dict[str, str]) -> dict:
         decir(f"Instalando el laboratorio en {self.d}")

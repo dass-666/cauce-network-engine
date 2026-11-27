@@ -180,6 +180,22 @@ class RobustezLanzadorTest(unittest.TestCase):
             self.assertFalse((lb.monitor / "A_MEDIAS").exists())
             self.assertEqual(json.loads(lb.estado_f.read_text("utf-8")).get("instalado"), "antes")
 
+    def test_estado_danado_no_revienta_y_pide_reinstalar(self):
+        """E6 (demostrado en el laboratorio): un estado.json a medio escribir hacía fallar previo y al-dia con
+        una traza. Ahora se aparta como .corrupt-<fecha> y la instalación se da por desactualizada."""
+        with tempfile.TemporaryDirectory() as d:
+            lb = lab.Lab(Path(d) / "l")
+            lab.validar_carpeta(lb.d, crear=True)
+            for basura in ('{"instalado": "ant', "[1, 2]", "\xff\xfe"):
+                lb.estado_f.write_bytes(basura.encode("latin-1"))
+                otro = lab.Lab(lb.d)
+                self.assertEqual(otro.estado, {})
+                self.assertFalse(otro.estado_f.exists())
+                self.assertTrue(otro.desactualizado(), "con el estado perdido hay que reinstalar")
+                self.assertTrue(otro.previo()["reinstalar"])
+            apartados = list(lb.d.glob("estado.json.corrupt-*"))
+            self.assertTrue(apartados, "el archivo dañado se conserva apartado")
+
     def test_actualizacion_fallida_restaura_la_anterior(self):
         with tempfile.TemporaryDirectory() as d:
             lb = lab.Lab(Path(d) / "l")
