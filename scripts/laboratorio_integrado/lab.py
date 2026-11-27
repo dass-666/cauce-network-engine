@@ -316,6 +316,23 @@ class Lab:
         self._lanzar("network_engine", args, self.ne, entorno_limpio({}))
         return self._esperar_puerto(self.p["network_engine"], 40)
 
+    def iniciar_monitor(self) -> bool:
+        token = self.datos("monitor.token")
+        env_m = entorno_limpio({"MONITOREO_ENTORNO": "desarrollo", "MONITOREO_PUERTO": str(self.p["monitor"]),
+                                "MONITOREO_DATA_DIR": str(self.datos("monitor", "x").parent),
+                                "MONITOREO_ADMIN_PASSWORD": self.estado["monitor_admin"],
+                                "MONITOREO_NETWORK_TOKEN_FILE": str(token), "MONITOREO_NETWORK_DIR": str(self.ne),
+                                "MONITOREO_NETWORK_PUERTO": str(self.p["network_engine"])})
+        self._lanzar("monitor", [self.py("monitor"), "-m", "monitoreo"], self.monitor, env_m)
+        return self._esperar_puerto(self.p["monitor"], 90)
+
+    def iniciar_forms(self) -> bool:
+        env_f = entorno_limpio({"CAUCE_AUDIT_PATH": str(self.datos("forms", "audit.jsonl")),
+                                "CAUCE_PROFILES_DIR": str(self.datos("forms", "profiles", "x").parent)})
+        self._lanzar("forms", [self.py("forms"), "-m", "cauce_form_connector.web.app", "--port", str(self.p["forms"]),
+                               "--no-open"], self.forms, env_f)
+        return self._esperar_puerto(self.p["forms"], 60)
+
     def iniciar(self, modo: str, lab_url: str | None, abrir: bool, objetivo: str | None = None) -> dict:
         self.estado["modo"], self.estado["lab_url"], self.estado["objetivo"] = modo, lab_url, objetivo
         self.guardar()
@@ -349,20 +366,10 @@ class Lab:
                                cwd=str(self.ne), capture_output=True, text=True, env=entorno_limpio({}))
             det["credencial_read"] = r.returncode == 0
         decir("  Monitor …")
-        env_m = entorno_limpio({"MONITOREO_ENTORNO": "desarrollo", "MONITOREO_PUERTO": str(self.p["monitor"]),
-                                "MONITOREO_DATA_DIR": str(self.datos("monitor", "x").parent),
-                                "MONITOREO_ADMIN_PASSWORD": self.estado["monitor_admin"],
-                                "MONITOREO_NETWORK_TOKEN_FILE": str(token), "MONITOREO_NETWORK_DIR": str(self.ne),
-                                "MONITOREO_NETWORK_PUERTO": str(self.p["network_engine"])})
-        self._lanzar("monitor", [self.py("monitor"), "-m", "monitoreo"], self.monitor, env_m)
-        det["monitor"] = self._esperar_puerto(self.p["monitor"], 90)
+        det["monitor"] = self.iniciar_monitor()
         if self.estado.get("forms", True) and self.forms.exists():
             decir("  Forms …")
-            env_f = entorno_limpio({"CAUCE_AUDIT_PATH": str(self.datos("forms", "audit.jsonl")),
-                                    "CAUCE_PROFILES_DIR": str(self.datos("forms", "profiles", "x").parent)})
-            self._lanzar("forms", [self.py("forms"), "-m", "cauce_form_connector.web.app", "--port", str(self.p["forms"]),
-                                   "--no-open"], self.forms, env_f)
-            det["forms"] = self._esperar_puerto(self.p["forms"], 60)
+            det["forms"] = self.iniciar_forms()
         ok = all(det.values())
         if ok and abrir:
             self.abrir()
