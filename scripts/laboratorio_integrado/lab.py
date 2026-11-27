@@ -203,6 +203,42 @@ def desplazamiento_puertos() -> int:
     return v if 0 <= v <= 500 else 0
 
 
+# Etiquetas y credenciales que crea el propio laboratorio (pasos 09b y 14). Nunca se toca nada que no empiece así.
+PREFIJOS_DEL_LABORATORIO = ("lab-forms", "lab-supervision", "lab-sesion")
+
+
+def limpiar_sobrantes_del_laboratorio(ne) -> dict:
+    """E6 (demostrado): una validación cortada (Ctrl+C, apagón) deja en el motor su credencial y su sesión de prueba, y
+    como las sesiones ahora se conservan tras reiniciar, la siguiente ejecución recibía 409 (etiqueta en uso o límite
+    de sesiones) y los pasos 09b y 14 fallaban durante una hora.
+
+    ``ne(ruta, metodo="GET", cuerpo=None) -> (estado, json)`` llama a la API con la credencial admin.
+    - Se revocan las credenciales sobrantes del laboratorio (no tienen nada pendiente).
+    - Se cierran las sesiones sobrantes del laboratorio que NO piden revisión: no hay nada que revisar.
+    - Las que SÍ piden revisión NO se tocan ni se dan por revisadas: siguen hasta que una persona las resuelva o
+      caduquen, y se informan. Las ejecuciones nuevas usan etiquetas únicas, así que no heredan esa marca.
+    """
+    out = {"credenciales_revocadas": 0, "sesiones_cerradas": 0, "sesiones_que_piden_revision": []}
+    st, r = ne("/status/sessions")
+    for x in ((r or {}).get("sessions") or []) if st == 200 and isinstance(r, dict) else []:
+        if not str(x.get("label", "")).startswith(PREFIJOS_DEL_LABORATORIO):
+            continue
+        if x.get("requires_human"):
+            out["sesiones_que_piden_revision"].append(x.get("label"))
+        elif ne(f"/sessions/{x['id']}", "DELETE")[0] == 200:
+            out["sesiones_cerradas"] += 1
+    st, r = ne("/tokens")
+    for t in ((r or {}).get("tokens") or []) if st == 200 and isinstance(r, dict) else []:
+        if str(t.get("name", "")).startswith(PREFIJOS_DEL_LABORATORIO) and not t.get("revoked_at"):
+            if ne(f"/tokens/{t['id']}", "DELETE")[0] in (200, 204):
+                out["credenciales_revocadas"] += 1
+    return out
+
+
+def etiqueta_unica(prefijo: str) -> str:
+    return f"{prefijo}-{int(time.time())}"
+
+
 def entorno_limpio(extra: dict[str, str]) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("MONITOREO_", "CAUCE_", "PLAYWRIGHT_"))}
     env.update(extra)
@@ -462,7 +498,9 @@ class Lab:
     # -------------------------------------------------------------------- servicios
     def _cfg_ne(self, modo: str, lab_url: str | None, objetivo: str | None = None) -> Path:
         cfg = {"data_dir": str(self.datos("network-engine", "x").parent), "api": {"port": self.p["network_engine"]},
-               "lab": {"rotation_enabled": False}}
+               "lab": {"rotation_enabled": False},
+               # 8 es el máximo del motor: una sesión sobrante que pide revisión no debe bloquear las pruebas (E6)
+               "sessions": {"max": 8}}
         if modo == "real" and objetivo:
             host = objetivo.rpartition(":")[0]
             cfg["health"] = {"targets": [objetivo]}                          # solo abrir y cerrar TCP a ese destino

@@ -616,31 +616,27 @@ class Integral:
         if not (self.lab.ne / "cauce" / "sessions.py").exists():
             return None
         # Una ejecución anterior cortada (corte de luz, contenedor reclamado, Ctrl+C a destiempo) puede dejar viva su
-        # credencial «lab-supervision*». Se revocan las de este laboratorio y el nombre nuevo es único, para que la
-        # sesión de supervisión no desaparezca en silencio (encontrado en E5 tras un reinicio del equipo).
-        st, lst = self.ne("/tokens")
-        if st == 200 and isinstance(lst, dict):
-            for t in lst.get("tokens") or []:
-                if str(t.get("name", "")).startswith("lab-supervision") and not t.get("revoked_at"):
-                    self.ne(f"/tokens/{t['id']}", "DELETE")
-        nombre = f"lab-supervision-{int(time.time())}"
+        # credencial y su sesión (E5 y E6). Se limpia lo sobrante del laboratorio sin dar nada por revisado, y la
+        # etiqueta y el nombre nuevos son únicos.
+        self.sobrantes = L.limpiar_sobrantes_del_laboratorio(self.ne)
+        nombre = L.etiqueta_unica("lab-supervision")
         st, tok = self.ne("/tokens", "POST", {"name": nombre, "scope": "session"})
         if st not in (200, 201) or not isinstance(tok, dict):
             self.sesion_motivo = f"no se pudo crear su credencial (HTTP {st})"
             return None
         base = f"http://127.0.0.1:{self.lab.p['network_engine']}/api/v1"
-        st, v = L.http(base + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+        st, v = L.http(base + "/sessions", "POST", {"label": nombre, "connection_id": "sim-a",
                                                      "authorized_by_user": True, "heartbeat_timeout_s": 300}, tok["token"])
         if st != 201:
             self.ne(f"/tokens/{tok['id']}", "DELETE")
             self.sesion_motivo = f"no se pudo registrar (HTTP {st})"
             return None
-        return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base}
+        return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base, "label": nombre}
 
     def _latir_sesion(self, s: dict) -> dict:
         st, v = L.http(f"{s['base']}/sessions/{s['id']}/heartbeat", "POST", {"status": "ok", "operation": "idle"}, s["token"])
         if st == 404:                                   # NE se reinició (sesiones en memoria): se registra de nuevo
-            st2, v2 = L.http(s["base"] + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
+            st2, v2 = L.http(s["base"] + "/sessions", "POST", {"label": s.get("label", "lab-supervision"), "connection_id": "sim-a",
                                                                "authorized_by_user": True, "heartbeat_timeout_s": 300}, s["token"])
             if st2 == 201:
                 s["id"] = v2["id"]

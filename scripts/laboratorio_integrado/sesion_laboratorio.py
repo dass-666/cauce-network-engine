@@ -48,13 +48,17 @@ def prueba(it) -> dict:
     if not (lb.estado.get("navegador_forms") or os.environ.get("CAUCE_LAB_BROWSER_PATH")):
         return {"estado": "PENDIENTE", "evidencia": "LOCAL", "detalle": "sin Chromium para Forms (1_INSTALAR.cmd --navegador-forms)"}
     port, adm = lb.p["network_engine"], lb.admin_ne()
-    st, tok = _http(port, "/tokens", adm, "POST", {"name": "lab-sesion", "scope": "session"})
+    sobrantes = L.limpiar_sobrantes_del_laboratorio(
+        lambda ruta, metodo="GET", cuerpo=None: _http(port, ruta, adm, metodo, cuerpo))          # E6: lo que dejó una ejecución cortada
+    etiqueta = L.etiqueta_unica("lab-forms")
+    st, tok = _http(port, "/tokens", adm, "POST", {"name": L.etiqueta_unica("lab-sesion"), "scope": "session"})
     if st not in (200, 201) or not isinstance(tok, dict):
         return {"estado": "FALLA", "detalle": f"no se pudo crear la credencial de sesión (HTTP {st})"}
     _, tareas0 = _http(port, "/tasks", adm)
     env = lb.entorno_forms()
     env.update({"CAUCE_LAB_NE_PORT": str(port), "CAUCE_LAB_NE_ADMIN": adm, "CAUCE_LAB_NE_SESSION": tok["token"],
-                "CAUCE_LAB_FORMS_URL": f"http://127.0.0.1:{lb.p['forms']}/lab/01_tradicional.html"})
+                "CAUCE_LAB_FORMS_URL": f"http://127.0.0.1:{lb.p['forms']}/lab/01_tradicional.html",
+                "CAUCE_LAB_ETIQUETA": etiqueta})
     try:
         r = subprocess.run([lb.py("forms"), os.path.abspath(__file__), "--hijo"], cwd=str(lb.forms), env=env,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=420)
@@ -81,13 +85,19 @@ def prueba(it) -> dict:
             "detalle": (f"fases vistas: {', '.join(vistas)}" + (f"; FALTAN: {', '.join(faltan)}" if faltan else "")
                         + f"; formulario enviado: {res.get('formulario_enviado')}; tareas del motor: {n1 - n0}"
                         + f"; sigue pidiendo persona tras recuperar: {res.get('sigue_pidiendo_persona_tras_recuperar')}"
-                        + (f"; error: {res['error']}" if res.get("error") else "")),
+                        + (f"; error: {res['error']}" if res.get("error") else "")
+                        + (f"; de ejecuciones cortadas: {sobrantes['sesiones_cerradas']} sesiones cerradas, "
+                           f"{sobrantes['credenciales_revocadas']} credenciales revocadas, siguen pidiendo revisión "
+                           f"{len(sobrantes['sesiones_que_piden_revision'])} (no se quitan solas)"
+                           if any((sobrantes['sesiones_cerradas'], sobrantes['credenciales_revocadas'],
+                                   sobrantes['sesiones_que_piden_revision'])) else "")),
             "tiempos_s": res.get("tiempos")}
 
 
 # ------------------------------------------------------------------------------------------------ hijo
 def _hijo() -> int:
     port = int(os.environ["CAUCE_LAB_NE_PORT"])
+    etiqueta = os.environ.get("CAUCE_LAB_ETIQUETA", "lab-forms")
     adm, ses, url = os.environ["CAUCE_LAB_NE_ADMIN"], os.environ["CAUCE_LAB_NE_SESSION"], os.environ["CAUCE_LAB_FORMS_URL"]
     fases = {f: False for f in ("iniciada", "activa", "perdida_conectividad", "recuperada", "requiere_intervencion",
                                 "incierta", "interrumpida", "cerrada")}
@@ -130,7 +140,7 @@ def _hijo() -> int:
 
     try:
         from playwright.sync_api import sync_playwright
-        st, s = _http(port, "/sessions", ses, "POST", {"label": "lab-forms", "connection_id": "sim-a",
+        st, s = _http(port, "/sessions", ses, "POST", {"label": etiqueta, "connection_id": "sim-a",
                                                          "authorized_by_user": True, "heartbeat_timeout_s": 6})
         if st != 201:
             raise RuntimeError(f"registro rechazado: HTTP {st} {s}")
@@ -175,9 +185,14 @@ def _hijo() -> int:
             nav.close()
         _http(port, f"/sessions/{sid}", ses, "DELETE")
         _, resumen = _http(port, "/status/sessions", adm)
-        fases["cerrada"] = any(c.get("label") == "lab-forms" and c.get("phase") == "cerrada"
+        fases["cerrada"] = any(c.get("label") == etiqueta and c.get("phase") == "cerrada"
                                for c in (resumen or {}).get("closed") or [])
         sid = None
+    except KeyboardInterrupt:              # E6: Ctrl+C deja la red simulada como estaba y cierra lo suyo
+        red("up")
+        if sid:
+            _http(port, f"/sessions/{sid}", ses, "DELETE")
+        raise
     except Exception as e:  # noqa: BLE001
         out["error"] = f"{type(e).__name__}: {e}"[:300]
         red("up")
