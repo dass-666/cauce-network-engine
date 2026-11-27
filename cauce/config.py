@@ -7,12 +7,16 @@ import os
 import sys
 from typing import Any, Optional
 
+from . import DEFAULT_API_PORT
 from .audit import _SECRET_HINTS
+
+# Variable de entorno que fija el puerto de la API sin tocar el archivo de configuración.
+PORT_ENV = "CAUCE_NE_PORT"
 
 LOOPBACK_HOSTS = {"127.0.0.1"}
 
 DEFAULTS: dict[str, Any] = {
-    "api": {"host": "127.0.0.1", "port": 8765},
+    "api": {"host": "127.0.0.1", "port": DEFAULT_API_PORT},
     "health": {
         # Destinos de diagnóstico autorizados ("host:puerto"). Solo conexión TCP,
         # sin enviar datos. Cámbialos por destinos que tengas permiso de sondear.
@@ -23,7 +27,13 @@ DEFAULTS: dict[str, Any] = {
     "lab": {
         # Únicos destinos permitidos para tareas de laboratorio y rotación.
         "allowed_hosts": ["127.0.0.1", "localhost"],
+        # Rotación de leases entre conexiones. Con el motor REAL está APAGADA salvo que se active aquí a
+        # propósito para un laboratorio propio. Con el simulador siempre está disponible (no hay red real).
+        # Nunca se usa contra servicios de terceros: un 429/403 detiene la operación igualmente.
+        "rotation_enabled": False,
     },
+    # Observación de routers (solo lectura). En esta versión solo hay transportes simulados.
+    "routers": [],
     "discovery": {
         "refresh_s": 30.0,
         "include_virtual": False,
@@ -85,6 +95,10 @@ def validate(cfg: dict) -> dict:
             raise ConfigError(f"Destino de diagnóstico inválido {t!r}; formato host:puerto")
     if not cfg["lab"]["allowed_hosts"]:
         raise ConfigError("lab.allowed_hosts no puede estar vacío")
+    if not isinstance(cfg["lab"].get("rotation_enabled", False), bool):
+        raise ConfigError("lab.rotation_enabled debe ser true o false")
+    from .routers import validate_router_config
+    validate_router_config(cfg.get("routers") or [])
     cfg["data_dir"] = cfg.get("data_dir") or default_data_dir()
     return cfg
 
@@ -94,6 +108,12 @@ def load(path: Optional[str] = None, overrides: Optional[dict] = None) -> dict:
     if path:
         with open(path, "r", encoding="utf-8") as fh:
             cfg = _merge(cfg, json.load(fh))
+    env_port = os.environ.get(PORT_ENV)
+    if env_port:
+        try:
+            cfg = _merge(cfg, {"api": {"port": int(env_port)}})
+        except ValueError:
+            raise ConfigError(f"{PORT_ENV} debe ser un número de puerto (se recibió {env_port!r})")
     if overrides:
         cfg = _merge(cfg, overrides)
     return validate(cfg)

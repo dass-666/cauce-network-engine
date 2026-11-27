@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cauce-network-engine"
-version = "0.1.0"
+version = "0.2.0.dev0"
 description = "Gestor local de múltiples conexiones de internet (Windows 11), con API en 127.0.0.1"
 requires-python = ">=3.10"
 dependencies = []
@@ -14,7 +14,8 @@ license = {text = "Propietario - uso interno"}
 cauce = "cauce.__main__:main"
 
 [tool.setuptools]
-packages = ["cauce", "cauce.discovery"]
+packages = ["cauce", "cauce.discovery", "cauce.routers"]
 
 [tool.setuptools.package-data]
 cauce = ["web/*.html"]
+"cauce.routers" = ["fixtures/*.json"]

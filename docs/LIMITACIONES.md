@@ -32,6 +32,16 @@ simulador · **Sin verificar** = implementado pero nunca ejecutado en el entorno
 | Selección de interfaz en Windows por IP de origen | **Sin verificar con dos salidas reales** | Depende del modelo *strong host* de Windows (ver abajo) |
 | Independencia real de dos ISP y conmutación física | **Pendiente (expresamente)** | El MSI solo tiene un gateway utilizable. Requiere hardware: `docs/HARDWARE.md` |
 
+## Cambios de 0.2.0 (rama `claude/consolidacion-integracion`)
+
+| Componente | Estado | Evidencia |
+|---|---|---|
+| Rotación apagada con el motor real | Verificado (unitario y API) | `tests/test_consolidation.py::RotationOutsideLabTest` |
+| Puerto 8780 y `CAUCE_NE_PORT` | Verificado (unitario) | `PortTest` |
+| Observación de routers MikroTik/OpenWrt | **Simulado** (sin hardware ni capturas reales) | `tests/test_routers.py`, [ROUTERS.md](ROUTERS.md) |
+| Guion de validación física `cauce fieldcheck` | **Simulado** en CI; página de sesión probada con Chromium real en loopback | `tests/test_fieldcheck.py`, [VALIDACION_FISICA_WINDOWS.md](VALIDACION_FISICA_WINDOWS.md) |
+| Conmutación con dos proveedores reales | **Sigue pendiente** | requiere el paquete de validación física |
+
 ## Limitaciones de diseño conocidas
 
 - **Credenciales `read` (rama `feat/tokens-lectura`)**: no aíslan entre procesos del mismo usuario de Windows ni sustituyen a un usuario/servicio separado; sin límite de peticiones por credencial. Ver [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md) §6.

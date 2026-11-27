@@ -147,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     p = sub.add_parser("labserver")
     p.add_argument("--port", type=int, default=8770)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="Dirección de escucha. 0.0.0.0 solo en TU servidor de laboratorio, nunca en el equipo de trabajo")
     p = sub.add_parser("token")
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
@@ -157,6 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     tsub.add_parser("recover")
     tp = tsub.add_parser("revoke")
     tp.add_argument("token_id")
+    p = sub.add_parser("fieldcheck", help="Validación física guiada con dos enlaces reales (ver docs/VALIDACION_FISICA_WINDOWS.md)")
+    p.add_argument("--lab-url", required=True, help="URL de TU servidor de laboratorio, p. ej. http://servidor-propio:8770")
+    p.add_argument("--out", default=None, help="Carpeta del informe (por defecto reports/fieldcheck-<fecha>)")
+    p.add_argument("--steps", type=int, default=240)
+    p.add_argument("--simulate", action="store_true", help="Mismo guion con el simulador (no es validación física)")
+    p.add_argument("--no-browser", action="store_true", help="No abrir la página de sesión de navegador")
+    p = sub.add_parser("routers", help="Muestra lo que ven los routers configurados (solo lectura)")
     p = sub.add_parser("verify-audit")
     p.add_argument("path", nargs="?")
     a = ap.parse_args(argv)
@@ -203,10 +212,29 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             prov = None
         return print_report(run_checks(cfg, prov))
+    if a.cmd == "fieldcheck":
+        from .fieldcheck import run as fieldcheck
+        out = a.out or os.path.join("reports", "fieldcheck-" + time.strftime("%Y%m%d-%H%M%S"))
+        res = fieldcheck(a.lab_url, out, simulate=a.simulate, steps=a.steps, config_path=a.config,
+                         step_delay_s=0.02 if a.simulate else 1.0, open_browser=not a.no_browser,
+                         ask=(lambda _msg: None) if a.simulate else input)
+        return 0 if not res["failed"] else 1
+    if a.cmd == "routers":
+        from .status import routers_view
+        from .engine import Engine
+        from .simulator import SimulatedNetwork, three_links
+        net = SimulatedNetwork(three_links())
+        eng = Engine(cfg, net, net, mode="simulated")
+        for rw in eng.routers:
+            rw.poll(force=True)
+        print(json.dumps(routers_view(eng, time.time()), ensure_ascii=False, indent=2))
+        if not eng.routers:
+            print("Sin routers configurados (clave \"routers\" en config.json; solo transporte simulado).")
+        return 0
     if a.cmd == "labserver":
         from .labserver import LabServer
-        srv = LabServer(port=a.port).start()
-        print(f"Servidor de laboratorio en http://127.0.0.1:{srv.port} (Ctrl+C para cerrar)")
+        srv = LabServer(host=a.host, port=a.port).start()
+        print(f"Servidor de laboratorio en http://{a.host}:{srv.port} (Ctrl+C para cerrar)")
         try:
             while True:
                 time.sleep(1)

@@ -22,7 +22,7 @@ python -m cauce token revoke <id>                                   # efecto inm
 
 - El archivo `monitor.token` queda protegido con DPAPI **del usuario de Windows que lo creó**: Monitor debe correr con ese usuario.
 - Monitor guarda **solo la ruta** del archivo en su configuración (nunca el texto del token, nunca `api.token`).
-- Puerto: `8765` por defecto (si el motor usa otro, está en `api.json` del directorio de datos). Solo `127.0.0.1`.
+- Puerto: `8780` por defecto desde 0.2.0 (antes 8765; variable `CAUCE_NE_PORT`) (si el motor usa otro, está en `api.json` del directorio de datos). Solo `127.0.0.1`.
 - Se envía como `Authorization: Bearer <token>`. El cliente `CauceReadClient.from_token_file(ruta, port=...)` lo hace por ti.
 
 ## 2. Esquemas reales (salida del simulador)

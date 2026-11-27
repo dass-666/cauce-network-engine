@@ -1,6 +1,6 @@
 # API local v1
 
-Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON UTF‑8.
+Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8780 desde 0.2.0; antes 8765, que ahora usa Cauce Forms. Variable `CAUCE_NE_PORT` o `api.port` en config.json). Formato JSON UTF‑8.
 
 ## Seguridad
 
@@ -16,7 +16,7 @@ Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON
 ### Permisos (desde esta rama)
 
 El token de sesión es `admin`. Además hay credenciales `read` por sistema que **solo** llegan a `/ping`, `/status/connectivity`
-y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
+`/status/routers` (desde 0.2.0, ver [ROUTERS.md](ROUTERS.md)) y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
 `GET/POST /tokens`, `POST /tokens/recover`, `DELETE /tokens/{id}` (`503 revocation_not_persisted` si la revocación no pudo guardarse; las `read` quedan en `503 credentials_locked` hasta recuperar). Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
 
 ## Errores
@@ -125,3 +125,13 @@ Cada evento: `{"seq", "ts", "kind", "message", "data", "prev", "hash"}`. Tipos p
 `route.failover`, `route.failback`, `route.rotation`, `route.verified`, `route.mismatch`,
 `task.*`, `service.limit`, `rotation.*`, `engine.*`, `error`.
 `hash` encadena cada evento con el anterior; `cauce verify-audit` detecta ediciones.
+
+
+## Cambios en 0.2.0
+
+- Puerto por defecto **8780** (ver [PUERTOS.md](PUERTOS.md)).
+- Con el motor real (`cauce run`) la rotación está **apagada**: `POST /rotation` y `.../activate` responden
+  `403 rotation_disabled` salvo `"lab": {"rotation_enabled": true}` en la configuración de un laboratorio propio.
+  El simulador la conserva para el escenario.
+- `GET /status/routers` (`read`): observación de routers, solo simulada en esta versión.
+- `GET /diagnostics` añade `rotation_enabled` y `routers`.

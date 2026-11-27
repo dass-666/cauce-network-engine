@@ -163,7 +163,7 @@ Efecto operativo: ante un fallo de disco, los consumidores reciben `503` y deben
 ## 9. Probar un consumidor en simulación
 
 ```
-python -m cauce sim --port 8765            # terminal 1 (datos ficticios; no es hardware)
+python -m cauce sim --port 8780            # terminal 1 (datos ficticios; no es hardware)
 python -m cauce token create --name prueba --out prueba.token   # terminal 2
 python - <<'PY'
 from cauce.client import CauceReadClient
@@ -171,7 +171,7 @@ c = CauceReadClient.from_token_file("prueba.token")
 v = c.connectivity(); print(v["state"], v["usable"])
 print(c.events(since=v["last_seq"]))
 PY
-curl -s -H "Authorization: Bearer <admin>" -X POST http://127.0.0.1:8765/api/v1/sim/connections/sim-a/state -d '{"state":"down"}'   # solo simulación
+curl -s -H "Authorization: Bearer <admin>" -X POST http://127.0.0.1:8780/api/v1/sim/connections/sim-a/state -d '{"state":"down"}'   # solo simulación
 python -m cauce token revoke <id>          # el consumidor recibe 401 token_revoked
 ```
 

@@ -45,7 +45,10 @@ class Engine:
             recover_threshold=hc["recover_threshold"], degraded_latency_ms=hc["degraded_latency_ms"],
         ), self.connections)
         self.routes = RouteManager(self.audit, self.connections, self.health.state_of)
-        self.rotation = RotationController(self.routes, self.audit)
+        self.rotation_enabled = mode != "real" or bool(cfg["lab"].get("rotation_enabled", False))
+        self.rotation = RotationController(self.routes, self.audit, enabled=self.rotation_enabled)
+        from .routers import build_observers
+        self.routers = build_observers(cfg.get("routers") or [], self.audit)
         self.executor = TaskExecutor(network, self.routes, self.health, self.rotation, self.audit, self.connection)
         self.health.on_change(self._on_health_change)
         self._stop = threading.Event()
@@ -216,6 +219,8 @@ class Engine:
             "tasks_running": sum(1 for t in tasks if t.state not in TERMINAL_TASK_STATES),
             "tasks_total": len(tasks),
             "audit_last_seq": self.audit.last_seq,
+            "rotation_enabled": self.rotation_enabled,
+            "routers": len(self.routers),
             "global_routes_modified": False,  # el motor nunca modifica la tabla de rutas
             "note": "Simulación: no prueba hardware real" if self.mode == "simulated" else None,
         }
@@ -228,6 +233,11 @@ class Engine:
             if now - last_refresh >= self.cfg["discovery"]["refresh_s"]:
                 self.refresh()
                 last_refresh = now
+            for rw in self.routers:
+                try:
+                    rw.poll()
+                except Exception as e:  # noqa: BLE001
+                    self.audit.record("error", f"Fallo en observación de router: {e!r}")
             try:
                 self.rotation.tick()
             except Exception as e:
@@ -238,6 +248,8 @@ class Engine:
         self.audit.record("engine.start", f"Motor iniciado (modo {self.mode})", version=__version__)
         self.refresh()
         self.health.check_all(force=True)
+        for rw in self.routers:
+            rw.poll(force=True)
         self.health.start()
         th = threading.Thread(target=self._background, name="cauce-engine", daemon=True)
         th.start()

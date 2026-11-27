@@ -19,6 +19,7 @@ from .models import Health
 
 SCHEMA_CONNECTIVITY = "cauce.connectivity/1"
 SCHEMA_EVENTS = "cauce.status-events/1"
+SCHEMA_ROUTERS = "cauce.routers/1"
 
 # Tipos de evento visibles para un consumidor y los únicos campos de ``data`` que se copian.
 _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -27,6 +28,7 @@ _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     "inventory.added": ("connection_id",),
     "inventory.changed": ("connection_id",),
     "inventory.removed": ("connection_id",),
+    "router.state": ("router", "old", "new", "active_wan", "reason"),
     "engine.start": (),
     "engine.stop": (),
 }
@@ -132,3 +134,30 @@ def events_view(engine: Engine, since: int, limit: int) -> dict[str, Any]:
         "next_since": next_since,
         "events": out,
     }
+
+
+def routers_view(engine: Engine, now: float) -> dict[str, Any]:
+    """Lo que ven los routers configurados (solo lectura; en esta versión, transportes simulados).
+
+    Por router: ``state`` (usable | degraded | unavailable | unknown), ``reason``, ``active_wan`` y por WAN
+    etiqueta, tipo, enlace, internet, activa, latencia y pérdida. Sin IP, MAC, gateways ni credenciales.
+    ``simulated`` es true mientras el transporte sea simulado: un consumidor NO debe presentarlo como real.
+    Como /status/connectivity, solo usa lo que el motor ya tiene en memoria (no consulta al router).
+    """
+    routers = []
+    for rw in engine.routers:
+        snap = rw.last
+        if snap is None:
+            routers.append({"router": rw.name, "vendor": rw.observer.vendor, "simulated": True, "state": "unknown",
+                            "reason": "not_observed_yet", "active_wan": None, "observed_at": None, "wans": []})
+            continue
+        routers.append({
+            "router": snap.router, "vendor": snap.vendor, "simulated": True,
+            "state": snap.state, "reason": snap.reason, "active_wan": snap.active_wan,
+            "observed_at": _iso(snap.observed_at),
+            "wans": [{"label": w.label, "kind": w.kind, "link_up": w.link_up, "internet": w.internet,
+                      "active": w.active, "latency_ms": w.latency_ms, "loss_pct": w.loss_pct} for w in snap.wans],
+        })
+    return {"schema": SCHEMA_ROUTERS, "api": API_VERSION,
+            "engine": {"version": __version__, "mode": engine.mode, "epoch": engine.audit.epoch},
+            "generated_at": _iso(now), "routers": routers}

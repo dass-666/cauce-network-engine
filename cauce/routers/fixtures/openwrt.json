@@ -1,0 +1,44 @@
+{
+  "_nota": "Respuestas SIMULADAS con el formato de 'ubus call mwan3 status' y 'ubus call network.interface dump' de OpenWrt. No son capturas de un equipo real. IP de documentación (RFC 5737).",
+  "scenarios": {
+    "normal": {
+      "mwan3 status": {"interfaces": {
+        "wan": {"enabled": true, "running": true, "tracking": "active", "status": "online", "online": 3600, "offline": 0,
+                "track_ip": [{"ip": "203.0.113.10", "status": "up", "latency": 17, "packetloss": 0}]},
+        "wanb": {"enabled": true, "running": true, "tracking": "active", "status": "online", "online": 3600, "offline": 0,
+                 "track_ip": [{"ip": "203.0.113.10", "status": "up", "latency": 58, "packetloss": 0}]}
+      }},
+      "network.interface dump": {"interface": [
+        {"interface": "wan", "up": true, "proto": "dhcp", "route": [{"target": "0.0.0.0", "mask": 0, "nexthop": "192.0.2.1"}]},
+        {"interface": "wanb", "up": true, "proto": "qmi", "route": []},
+        {"interface": "lan", "up": true, "proto": "static", "route": []}
+      ]}
+    },
+    "wan1_down": {
+      "mwan3 status": {"interfaces": {
+        "wan": {"enabled": true, "running": true, "tracking": "active", "status": "offline", "online": 0, "offline": 40,
+                "track_ip": [{"ip": "203.0.113.10", "status": "down", "latency": null, "packetloss": 100}]},
+        "wanb": {"enabled": true, "running": true, "tracking": "active", "status": "online", "online": 3640, "offline": 0,
+                 "track_ip": [{"ip": "203.0.113.10", "status": "up", "latency": 66, "packetloss": 0}]}
+      }},
+      "network.interface dump": {"interface": [
+        {"interface": "wan", "up": true, "proto": "dhcp", "route": [{"target": "0.0.0.0", "mask": 0, "nexthop": "192.0.2.1"}]},
+        {"interface": "wanb", "up": true, "proto": "qmi", "route": [{"target": "0.0.0.0", "mask": 0, "nexthop": "198.51.100.1"}]}
+      ]}
+    },
+    "both_down": {
+      "mwan3 status": {"interfaces": {
+        "wan": {"status": "offline", "track_ip": [{"status": "down", "packetloss": 100}]},
+        "wanb": {"status": "offline", "track_ip": [{"status": "down", "packetloss": 100}]}
+      }},
+      "network.interface dump": {"interface": [
+        {"interface": "wan", "up": false, "proto": "dhcp", "route": []},
+        {"interface": "wanb", "up": true, "proto": "qmi", "route": []}
+      ]}
+    },
+    "garbage": {
+      "mwan3 status": "Command failed: Not found",
+      "network.interface dump": {"interface": []}
+    }
+  }
+}

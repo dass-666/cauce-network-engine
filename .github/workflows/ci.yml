@@ -20,12 +20,18 @@ jobs:
         run: python -m unittest -v
       - name: Escenario de 10 pasos (simulador)
         run: python -m cauce scenario --out reports
+      - name: Guion de validación física con el simulador (no es validación física)
+        run: python -m cauce fieldcheck --simulate --lab-url http://lab.sim:8770 --steps 60 --out reports/fieldcheck-sim
       - name: Detección real de interfaces (Windows, solo lectura)
         if: runner.os == 'Windows'
         run: |
           python -m cauce doctor
           python -m cauce discover --raw reports/windows-runner-capture.json
           Get-Content reports/windows-runner-capture.json
+      - name: Comprobación de los tres motores (Windows, solo lectura; aquí ninguno corre)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/windows/validacion_fisica/TRES_MOTORES.ps1
       - name: Instalación aislada (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

@@ -383,7 +383,9 @@ if __name__ == "__main__":
 class RevisionPr45Test(Base):
     """Cierre de la revisión de las PR #4 y #5: cobertura exhaustiva, almacenamiento y secretos."""
 
-    READ_ROUTES = {("GET", "/api/v1/status/connectivity"), ("GET", "/api/v1/status/events")}
+    # /status/routers se añadió a propósito en 0.2.0 (observación de routers, solo lectura y sin datos sensibles).
+    READ_ROUTES = {("GET", "/api/v1/status/connectivity"), ("GET", "/api/v1/status/events"),
+                   ("GET", "/api/v1/status/routers")}
 
     def test_every_registered_route_is_denied_to_read_unless_whitelisted(self):
         """Recorre las rutas REALES del servidor (no una lista a mano): una ruta nueva sin declarar queda como admin."""
