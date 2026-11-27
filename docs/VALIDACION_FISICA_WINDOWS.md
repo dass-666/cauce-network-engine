@@ -13,6 +13,47 @@
 - No abre Monitor ni Forms: si quieres probar los tres a la vez, ábrelos antes con sus propios lanzadores.
 - La rotación sigue apagada. Un 429/403 detiene la tarea como siempre.
 
+## Qué necesita cada punto
+
+| Punto | Solo la MSI (sin servidor, 1 enlace) | Tu servidor externo | Dos enlaces físicos |
+|---|---|---|---|
+| F1 entorno y rutas | ✔ | | |
+| F2 dos enlaces con salidas distintas | detecta los enlaces, pero no sabe si salen por proveedores distintos | ✔ (dice qué IP pública ve) | ✔ |
+| F3 estado de cada enlace | | ✔ | ✔ |
+| F4 y F9 sesión de navegador | | ✔ | ✔ (F9 solo tiene sentido con un corte real) |
+| F5 tarea larga | | ✔ | |
+| F6 pérdida y conmutación | | ✔ | ✔ |
+| F7 recuperación | | ✔ | ✔ |
+| F8 escrituras exactamente una vez | | ✔ | ✔ (con corte real) |
+| F10 auditoría | ✔ | | |
+| F11 los tres motores | ✔ (con el laboratorio integrado en marcha: `--engines lab`) | | |
+| F12 rutas sin tocar | ✔ | | |
+
+Sin servidor externo, la MSI sola ya puede hacer lo que sí demuestra el **laboratorio integrado**
+(`docs/LABORATORIO_INTEGRADO_WINDOWS.md`): los tres motores juntos, Monitor con Network Engine apagado y su recuperación, y
+F1, F10, F11 y F12. Todo eso es **LOCAL**: no demuestra pérdida ni recuperación de un enlace real.
+
+## Cómo conseguir el servidor externo sin contratar nada
+
+Lo único imprescindible es **otro equipo tuyo** que se pueda alcanzar desde los datos móviles del teléfono.
+
+1. **Equipo de casa con el puerto 8770 abierto en el router de casa** (costo 0). Antes de nada, comprueba si tu proveedor
+   te deja recibir conexiones:
+   - En ese equipo ejecuta `SERVIDOR_LABORATORIO.cmd`.
+   - Abre el puerto 8770 hacia ese equipo en el router.
+   - Desde el **teléfono, con el Wi‑Fi apagado**, abre `http://<IP pública de casa>:8770/ok`. La IP pública la ves en el router.
+   - Si responde `ok`, sirve. Si no responde, puede ser **CGNAT**: muchos proveedores domésticos comparten la IP pública y
+     no dejan entrar. Si la IP que muestra el router empieza por `100.64.` a `100.127.`, `10.`, `172.16.` a `172.31.` o
+     `192.168.`, hay CGNAT o doble NAT y no se puede entrar desde fuera. En ese caso pídele al proveedor una IP pública; a veces es gratis.
+2. **Si no hay forma sin CGNAT:** las alternativas (túnel de un tercero o máquina virtual gratuita) obligan a abrir una cuenta en
+   un servicio. Eso es una decisión tuya; este paquete no lo hace.
+3. **No vale** un servidor en la misma red local que el enlace 1: los datos móviles no llegan a él, y F3, F6 y F7 fallarían
+   por eso y no por Cauce.
+
+Para el procedimiento completo desde la MSI usa `scripts\laboratorio_integrado\5_PRUEBA_FISICA.cmd`. Arranca los tres motores en
+modo real (Network Engine solo observa y sondea tu servidor), comprueba antes que tu servidor responde y ejecuta este guion
+con `--engines lab`.
+
 ## Lo que necesitas (sin compras)
 
 | Elemento | Opción sin costo | Nota |

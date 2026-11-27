@@ -44,6 +44,9 @@ from . import DEFAULT_API_PORT, __version__
 OK, FAIL, SKIP, INFO = "ok", "fallo", "omitido", "info"
 ENGINES = {"Monitor": ("127.0.0.1", 8000, "/api/info"), "Forms": ("127.0.0.1", 8765, "/"),
            "Network Engine": ("127.0.0.1", DEFAULT_API_PORT, "/api/v1/ping")}
+# Puertos del laboratorio integrado (scripts/laboratorio_integrado/versiones.json): distintos de los normales.
+ENGINES_LAB = {"Monitor": ("127.0.0.1", 8100, "/api/info"), "Forms": ("127.0.0.1", 8865, "/"),
+               "Network Engine": ("127.0.0.1", 8880, "/api/v1/ping")}
 
 
 def mask_ip(ip: Optional[str]) -> Optional[str]:

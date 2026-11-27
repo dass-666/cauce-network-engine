@@ -49,7 +49,7 @@ def _setup_logging(data_dir: str, verbose: bool) -> str:
 def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     from .api import CauceAPI
     from .engine import Engine
-    from .secrets_store import write_secret
+    from .secrets_store import storage_method, write_secret
 
     log_path = _setup_logging(cfg["data_dir"], False)
     log = logging.getLogger("cauce")
@@ -73,11 +73,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     if sim is not None:
         api.enable_sim_control(sim)
     token_path = os.path.join(cfg["data_dir"], "api.token")
-    method = write_secret(token_path, api.token)
     info_path = os.path.join(cfg["data_dir"], "api.json")
-    with open(info_path, "w", encoding="utf-8") as fh:
-        json.dump({"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
-                   "started": time.time(), "token_storage": method}, fh)
+    for p in (token_path, info_path):   # restos de una ejecución que no se cerró bien: no deben parecer «listo»
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
     stop = threading.Event()
 
@@ -92,6 +93,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
 
     engine.start()
     api.start()
+    # Los archivos de descubrimiento se escriben cuando la API ya atiende, cada uno de forma atómica, y
+    # api.token el último: quien espera a que exista api.token encuentra también api.json con el puerto
+    # correcto y una API que responde (antes había una ventana en la que el CLI usaba el puerto por defecto).
+    _write_json_atomic(info_path, {"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
+                                   "started": time.time(), "token_storage": storage_method()})
+    write_secret(token_path, api.token, atomic=True)
     url = f"http://127.0.0.1:{api.port}/?t={api.token}"
     log.info("Cauce %s en modo %s. API: http://127.0.0.1:%s/api/v1  Registro: %s", __version__, mode, api.port, log_path)
     if mode == "simulated":
@@ -113,6 +120,15 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
                 pass
         log.info("Cierre limpio completado.")
     return 0
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _client(cfg: dict):
@@ -169,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--steps", type=int, default=240)
     p.add_argument("--simulate", action="store_true", help="Mismo guion con el simulador (no es validación física)")
     p.add_argument("--no-browser", action="store_true", help="No abrir la página de sesión de navegador")
+    p.add_argument("--engines", choices=["normal", "lab"], default="normal",
+                   help="F11: puertos de las instalaciones normales o del laboratorio integrado")
     p = sub.add_parser("routers", help="Muestra lo que ven los routers configurados (solo lectura)")
     p = sub.add_parser("verify-audit")
     p.add_argument("path", nargs="?")
@@ -222,11 +240,12 @@ def main(argv: list[str] | None = None) -> int:
             prov = None
         return print_report(run_checks(cfg, prov))
     if a.cmd == "fieldcheck":
-        from .fieldcheck import run as fieldcheck
+        from .fieldcheck import ENGINES, ENGINES_LAB, run as fieldcheck
         out = a.out or os.path.join("reports", "fieldcheck-" + time.strftime("%Y%m%d-%H%M%S"))
         res = fieldcheck(a.lab_url, out, simulate=a.simulate, steps=a.steps, config_path=a.config,
                          step_delay_s=0.02 if a.simulate else 1.0, open_browser=not a.no_browser,
-                         ask=(lambda _msg: None) if a.simulate else input)
+                         ask=(lambda _msg: None) if a.simulate else input,
+                         engines=ENGINES_LAB if a.engines == "lab" else ENGINES)
         return 0 if not res["failed"] else 1
     if a.cmd == "routers":
         from .status import routers_view
