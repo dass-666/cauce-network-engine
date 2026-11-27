@@ -116,6 +116,29 @@ class LabIntegradoTest(unittest.TestCase):
             self.assertTrue(r["omitida"])
             self.assertIn("--navegador-forms", r["motivo"])
 
+    def test_modo_real_sin_servidor_solo_sondea_el_objetivo(self):
+        with tempfile.TemporaryDirectory() as d:
+            lab.validar_carpeta(Path(d) / "l", crear=True)
+            l = lab.Lab(Path(d) / "l")
+            cfg = json.loads(l._cfg_ne("real", None, "github.com:443").read_text("utf-8"))
+            self.assertEqual(cfg["health"]["targets"], ["github.com:443"])
+            self.assertIs(cfg["lab"]["rotation_enabled"], False)
+            with mock.patch("socket.create_connection", side_effect=OSError), mock.patch.object(l, "_lanzar") as lanzar:
+                r = l.iniciar("real", None, abrir=False, objetivo="destino.invalid:443")
+            self.assertFalse(r["ok"])
+            lanzar.assert_not_called()
+
+    def test_guion_sin_servidor_en_simulacion(self):
+        from cauce.fieldcheck import run_sin_servidor
+        with tempfile.TemporaryDirectory() as d:
+            res = run_sin_servidor("destino.example:443", d, simulate=True, ask=lambda _m: None)
+        estados = {c["id"]: c["status"] for c in res["checks"]}
+        for f in ("F1", "F2", "F3", "F6", "F7", "F10", "F12"):
+            self.assertEqual(estados[f], "ok", f)
+        for f in ("F4", "F5", "F8", "F9"):
+            self.assertEqual(estados[f], "omitido", f)
+        self.assertIn("SIMULADA", res["evidence_type"])
+
     def test_lanzadores_ascii_crlf(self):
         for f in (RAIZ / "scripts" / "laboratorio_integrado").glob("*.cmd"):
             b = f.read_bytes()

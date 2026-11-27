@@ -19,6 +19,7 @@ esa carpeta entera cuando termines.
 | — | `3_ABRIR_MONITOR.cmd` | Abre Monitor (usuario `admin`; la contraseña está en `estado.json` de la carpeta del laboratorio) | |
 | — | `DIAGNOSTICO.cmd` | Versiones, puertos y estado de los tres | |
 | 3 | `5_PRUEBA_FISICA.cmd` | Network Engine en modo **real**: solo observa las interfaces y sondea **tu** servidor. Te pide desconectar y reconectar un enlace | 10–15 min |
+| 3b | `6_PRUEBA_FISICA_SIN_SERVIDOR.cmd` | Igual que el paso 3 pero **sin servidor propio**: solo abre y cierra conexiones TCP al destino que indiques (`host:puerto`, uno que estés autorizado a usar). Cubre F1, F2 (por puerta de enlace), F3, F6, F7 y F10–F12; F4, F5, F8 y F9 quedan omitidos. Teléfono: `docs/TELEFONO_ANDROID_USB.md` | 10 min |
 | 4 | `4_DETENER.cmd` | Detiene solo lo que arrancó el laboratorio | |
 
 Informe: `%USERPROFILE%\cauce-lab-integrado\informes\INFORME_LABORATORIO.md`. Cada prueba indica su evidencia:

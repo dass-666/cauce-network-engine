@@ -176,7 +176,10 @@ def main(argv: list[str] | None = None) -> int:
     tp = tsub.add_parser("revoke")
     tp.add_argument("token_id")
     p = sub.add_parser("fieldcheck", help="Validación física guiada con dos enlaces reales (ver docs/VALIDACION_FISICA_WINDOWS.md)")
-    p.add_argument("--lab-url", required=True, help="URL de TU servidor de laboratorio, p. ej. http://servidor-propio:8770")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--lab-url", help="URL de TU servidor de laboratorio, p. ej. http://servidor-propio:8770")
+    g.add_argument("--objetivo", help="Sin servidor propio: host:puerto que estés autorizado a usar; solo se abre y cierra "
+                                      "una conexión TCP por enlace (F1, F2, F3, F6, F7, F10–F12)")
     p.add_argument("--out", default=None, help="Carpeta del informe (por defecto reports/fieldcheck-<fecha>)")
     p.add_argument("--steps", type=int, default=240)
     p.add_argument("--simulate", action="store_true", help="Mismo guion con el simulador (no es validación física)")
@@ -231,8 +234,13 @@ def main(argv: list[str] | None = None) -> int:
             prov = None
         return print_report(run_checks(cfg, prov))
     if a.cmd == "fieldcheck":
-        from .fieldcheck import ENGINES, ENGINES_LAB, run as fieldcheck
+        from .fieldcheck import ENGINES, ENGINES_LAB, run as fieldcheck, run_sin_servidor
         out = a.out or os.path.join("reports", "fieldcheck-" + time.strftime("%Y%m%d-%H%M%S"))
+        if a.objetivo:
+            res = run_sin_servidor(a.objetivo, out, simulate=a.simulate, config_path=a.config,
+                                   ask=(lambda _msg: None) if a.simulate else input,
+                                   engines=ENGINES_LAB if a.engines == "lab" else ENGINES)
+            return 0 if not res["failed"] else 1
         res = fieldcheck(a.lab_url, out, simulate=a.simulate, steps=a.steps, config_path=a.config,
                          step_delay_s=0.02 if a.simulate else 1.0, open_browser=not a.no_browser,
                          ask=(lambda _msg: None) if a.simulate else input,

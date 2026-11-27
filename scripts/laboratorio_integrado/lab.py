@@ -266,10 +266,14 @@ class Lab:
         return self.resultado("puertos", {"ok": ok, "detalle": det, "instalaciones_normales": info})
 
     # -------------------------------------------------------------------- servicios
-    def _cfg_ne(self, modo: str, lab_url: str | None) -> Path:
+    def _cfg_ne(self, modo: str, lab_url: str | None, objetivo: str | None = None) -> Path:
         cfg = {"data_dir": str(self.datos("network-engine", "x").parent), "api": {"port": self.p["network_engine"]},
                "lab": {"rotation_enabled": False}}
-        if modo == "real":
+        if modo == "real" and objetivo:
+            host = objetivo.rpartition(":")[0]
+            cfg["health"] = {"targets": [objetivo]}                          # solo abrir y cerrar TCP a ese destino
+            cfg["lab"]["allowed_hosts"] = [host, "127.0.0.1", "localhost"]
+        elif modo == "real":
             if not lab_url:
                 raise SystemExit("El modo real necesita la URL de TU servidor de laboratorio (--lab-url).")
             from urllib.parse import urlsplit
@@ -312,10 +316,17 @@ class Lab:
         self._lanzar("network_engine", args, self.ne, entorno_limpio({}))
         return self._esperar_puerto(self.p["network_engine"], 40)
 
-    def iniciar(self, modo: str, lab_url: str | None, abrir: bool) -> dict:
-        self.estado["modo"], self.estado["lab_url"] = modo, lab_url
+    def iniciar(self, modo: str, lab_url: str | None, abrir: bool, objetivo: str | None = None) -> dict:
+        self.estado["modo"], self.estado["lab_url"], self.estado["objetivo"] = modo, lab_url, objetivo
         self.guardar()
-        if modo == "real":
+        if modo == "real" and objetivo:
+            host, _, puerto = objetivo.rpartition(":")
+            try:
+                with socket.create_connection((host, int(puerto)), timeout=8):
+                    pass
+            except (OSError, ValueError):
+                return self.resultado("inicio", {"ok": False, "motivo": f"no se pudo abrir una conexión TCP a {objetivo}"})
+        elif modo == "real":
             st, _ = http((lab_url or "").rstrip("/") + "/ok", timeout=8)
             if st != 200:
                 return self.resultado("inicio", {"ok": False, "motivo": (
@@ -327,7 +338,7 @@ class Lab:
                 if not x["libre"] and not x["del_laboratorio"]:
                     decir(f"  Puerto {x['puerto']} ({x['servicio']}) ocupado {x['usado_por']}")
             return self.resultado("inicio", {"ok": False, "motivo": "puertos ocupados: no se arrancó nada"})
-        self._cfg_ne(modo, lab_url)
+        self._cfg_ne(modo, lab_url, objetivo)
         det = {}
         decir("  Network Engine …")
         det["network_engine"] = self.iniciar_ne()
@@ -483,9 +494,10 @@ class Lab:
         modo = self.estado.get("modo", "simulado")
         if modo == "real":
             out = self.d / "informes" / f"fieldcheck-{dt.datetime.now():%Y%m%d-%H%M%S}"
-            decir("  Prueba física guiada contra tu servidor de laboratorio (te pedirá desconectar y reconectar).")
-            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", "--lab-url", self.estado["lab_url"],
-                                "--out", str(out), "--steps", str(steps), "--engines", "lab"],
+            decir("  Prueba física guiada (te pedirá desconectar y reconectar un enlace).")
+            destino = (["--objetivo", self.estado["objetivo"]] if self.estado.get("objetivo")
+                       else ["--lab-url", self.estado["lab_url"], "--steps", str(steps)])
+            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", *destino, "--out", str(out), "--engines", "lab"],
                                cwd=str(self.ne), env=entorno_limpio({}))
             js = out / "fieldcheck.json"
             res = json.loads(js.read_text("utf-8")) if js.exists() else {}
@@ -616,6 +628,7 @@ def main(argv=None) -> int:
     pn = sub.add_parser("iniciar")
     pn.add_argument("--modo", choices=["simulado", "real"], default="simulado")
     pn.add_argument("--lab-url", help="modo real: URL de TU servidor de laboratorio, p. ej. http://mi-servidor:8770")
+    pn.add_argument("--objetivo", help="modo real sin servidor propio: host:puerto autorizado (solo sondeos TCP)")
     pn.add_argument("--no-abrir", action="store_true")
     sub.add_parser("abrir")
     sub.add_parser("diagnostico")
@@ -628,6 +641,7 @@ def main(argv=None) -> int:
     pt = sub.add_parser("todo", help="comprobar, iniciar, diagnóstico, pruebas e informe (deja los servicios en marcha)")
     pt.add_argument("--modo", choices=["simulado", "real"], default="simulado")
     pt.add_argument("--lab-url")
+    pt.add_argument("--objetivo", help="modo real sin servidor propio: host:puerto autorizado (solo sondeos TCP)")
     pt.add_argument("--no-abrir", action="store_true")
     a = ap.parse_args(argv)
 
@@ -644,7 +658,9 @@ def main(argv=None) -> int:
         imprimir("Puertos del laboratorio", p)
         return 0 if v["ok"] and p["ok"] else 1
     if a.cmd in ("iniciar", "todo"):
-        r = lab.iniciar(a.modo, a.lab_url, not a.no_abrir)
+        if a.lab_url and a.objetivo:
+            ap.error("usa --lab-url o --objetivo, no los dos")
+        r = lab.iniciar(a.modo, a.lab_url, not a.no_abrir, a.objetivo)
         imprimir("Inicio", {**r, "detalle": [{"servicio": k, "ok": v} for k, v in (r.get("servicios") or {}).items()]})
         if a.cmd == "iniciar" or not r["ok"]:
             return 0 if r["ok"] else 1
