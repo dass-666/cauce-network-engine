@@ -612,16 +612,28 @@ class Integral:
     def _sesion_supervision(self) -> Optional[dict]:
         """Sesión de diagnóstico SIN navegador que late durante la supervisión, para medir su continuidad a lo largo de
         horas (fases, intervención humana). No envía nada; solo latidos de estado. None si NE no tiene sesiones."""
+        self.sesion_motivo = None
         if not (self.lab.ne / "cauce" / "sessions.py").exists():
             return None
-        st, tok = self.ne("/tokens", "POST", {"name": "lab-supervision", "scope": "session"})
+        # Una ejecución anterior cortada (corte de luz, contenedor reclamado, Ctrl+C a destiempo) puede dejar viva su
+        # credencial «lab-supervision*». Se revocan las de este laboratorio y el nombre nuevo es único, para que la
+        # sesión de supervisión no desaparezca en silencio (encontrado en E5 tras un reinicio del equipo).
+        st, lst = self.ne("/tokens")
+        if st == 200 and isinstance(lst, dict):
+            for t in lst.get("tokens") or []:
+                if str(t.get("name", "")).startswith("lab-supervision") and not t.get("revoked_at"):
+                    self.ne(f"/tokens/{t['id']}", "DELETE")
+        nombre = f"lab-supervision-{int(time.time())}"
+        st, tok = self.ne("/tokens", "POST", {"name": nombre, "scope": "session"})
         if st not in (200, 201) or not isinstance(tok, dict):
+            self.sesion_motivo = f"no se pudo crear su credencial (HTTP {st})"
             return None
         base = f"http://127.0.0.1:{self.lab.p['network_engine']}/api/v1"
         st, v = L.http(base + "/sessions", "POST", {"label": "lab-supervision", "connection_id": "sim-a",
                                                      "authorized_by_user": True, "heartbeat_timeout_s": 300}, tok["token"])
         if st != 201:
             self.ne(f"/tokens/{tok['id']}", "DELETE")
+            self.sesion_motivo = f"no se pudo registrar (HTTP {st})"
             return None
         return {"id": v["id"], "token": tok["token"], "token_id": tok["id"], "base": base}
 
@@ -726,6 +738,8 @@ class Integral:
             f = (m.get("sesion") or {}).get("fase")
             if f:
                 fases[f] = fases.get(f, 0) + 1
+        if getattr(self, "sesion_motivo", None):
+            problemas.append(f"la sesión de supervisión no se pudo crear: {self.sesion_motivo}")
         sesion_persona = sum(1 for m in muestras if (m.get("sesion") or {}).get("requiere_persona"))
         if sesion_persona:
             problemas.append(f"la sesión de supervisión (sin operación en curso) pidió intervención humana en {sesion_persona} muestras")

@@ -223,5 +223,53 @@ class RobustezLanzadorTest(unittest.TestCase):
             self.assertTrue((it.dir / "INFORME_VALIDACION_INTEGRAL.md").exists())
 
 
+class SesionSupervisionTest(unittest.TestCase):
+    """E5: una ejecución cortada dejaba viva la credencial «lab-supervision»; la siguiente no podía crear la suya (409)
+    y la supervisión seguía SIN sesión y sin avisarlo. Ahora se revoca la sobrante y, si aun así falla, es un problema."""
+
+    def _integral(self, d, tokens, falla_post=False):
+        from types import SimpleNamespace
+        from unittest import mock
+        ne_dir = Path(d) / "ne"
+        (ne_dir / "cauce").mkdir(parents=True)
+        (ne_dir / "cauce" / "sessions.py").write_text("", "utf-8")
+        it = object.__new__(I.Integral)
+        it.lab = SimpleNamespace(ne=ne_dir, p={"network_engine": 1})
+
+        def ne(ruta, metodo="GET", cuerpo=None):
+            if ruta == "/tokens" and metodo == "GET":
+                return 200, {"tokens": [dict(t) for t in tokens.values()]}
+            if ruta == "/tokens" and metodo == "POST":
+                if falla_post or any(t["name"] == cuerpo["name"] and not t["revoked_at"] for t in tokens.values()):
+                    return 409, {"error": "name_in_use"}
+                tid = f"{len(tokens):08x}"
+                tokens[tid] = {"id": tid, "name": cuerpo["name"], "revoked_at": None}
+                return 201, {"id": tid, "token": "x", "name": cuerpo["name"]}
+            if ruta.startswith("/tokens/") and metodo == "DELETE":
+                tokens[ruta.split("/")[-1]]["revoked_at"] = 1.0
+                return 200, {}
+            return 404, None
+        it.ne = ne
+        return it, mock.patch.object(I.L, "http", return_value=(201, {"id": "bs_1"}))
+
+    def test_credencial_sobrante_de_una_ejecucion_cortada_no_impide_la_sesion(self):
+        tokens = {"aaaaaaaa": {"id": "aaaaaaaa", "name": "lab-supervision", "revoked_at": None}}
+        with tempfile.TemporaryDirectory() as d:
+            it, parche = self._integral(d, tokens)
+            with parche:
+                s = it._sesion_supervision()
+        self.assertIsNotNone(s)
+        self.assertIsNone(it.sesion_motivo)
+        self.assertEqual(tokens["aaaaaaaa"]["revoked_at"], 1.0)
+
+    def test_si_no_se_puede_crear_queda_el_motivo(self):
+        with tempfile.TemporaryDirectory() as d:
+            it, parche = self._integral(d, {}, falla_post=True)
+            with parche:
+                s = it._sesion_supervision()
+        self.assertIsNone(s)
+        self.assertIn("409", it.sesion_motivo)
+
+
 if __name__ == "__main__":
     unittest.main()
