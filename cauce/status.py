@@ -38,11 +38,12 @@ _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     "session.state": ("session_id", "old", "new", "reason"),
     "session.closed": ("session_id", "label"),
     # E5: antes no se publicaban y Monitor (E4) no podía mostrarlos aunque los traducía. Solo campos sin datos de máquina.
-    "inventory.reidentified": ("connection_id",),
+    "inventory.reidentified": ("connection_id", "previous_id"),   # E8: Monitor conserva el nombre de la interfaz
     "system.resume_detected": (),
     "session.requires_human": ("session_id", "reason"),
     "session.recovered": ("session_id", "previous"),
     "session.human_resolved": ("session_id",),
+    "session.pending_resolved": ("pending_id",),                     # E8: centro de revisiones de Monitor
     "session.restored": ("session_id", "requires_human"),
     "session.expired": ("session_id", "requires_human"),
     "session.replaced": ("session_id", "requires_human"),

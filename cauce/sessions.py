@@ -575,7 +575,9 @@ class SessionRegistry:
             return {
                 "max_sessions": self.max_sessions,
                 # marcas de intervención humana de sesiones ya cerradas; se heredan al registrar (sin ids ni dueños)
-                "pending_human_review": [{"id": p["id"], "label": p["label"], "reason": p["reason"]} for p in self._pending],
+                # E8: también tipo, antigüedad y texto de confirmación (centro de revisiones de Monitor; sin dueños)
+                "pending_human_review": [{k: v[k] for k in ("id", "kind", "label", "reason", "age_s", "confirm_with")}
+                                         for v in (self.pending_view(p) for p in self._pending)],
                 "sessions": [self.view(s) for s in ss],
                 "closed": [{k: v for k, v in c.items() if k != "closed_at"} | {"closed_age_s": round(self.clock() - c["closed_at"], 1)}
                            for c in self._closed],

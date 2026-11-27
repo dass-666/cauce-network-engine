@@ -79,6 +79,9 @@ class Integral:
         if str(self.lab.ne) not in sys.path:
             sys.path.insert(0, str(self.lab.ne))
 
+    INTENTOS_TELEFONO = 3              # E8 (L3)
+    ESPERA_TELEFONO_S = 120
+
     def preguntar(self, msg: str) -> Optional[str]:
         """None si no hay nadie para contestar (modo no interactivo)."""
         if not self.interactivo:
@@ -202,12 +205,31 @@ class Integral:
         if resp is None or resp == "omitir":
             self.intervenciones.append("Conectar el teléfono por USB en modo «Módem USB» y repetir la validación.")
             return {"estado": PENDIENTE, "evidencia": FISICA, "detalle": "no hay teléfono conectado por USB"}
-        enc, s = self._esperar(lambda: [c for c in self._telefonos() if c.usable and c.gateway], 120)
-        if not enc:
-            return {"estado": FALLA, "evidencia": FISICA, "detalle": f"Windows no mostró un teléfono con salida en {s} s",
-                    "vistos": [self.resumen_if(c) for c in self._telefonos()]}
-        return {"estado": PASA, "evidencia": FISICA, "detalle": f"detectado en caliente en {s} s: {enc[0].name} "
-                f"[{enc[0].description[:40]}]", "telefono": [self.resumen_if(c) for c in enc]}
+        # E8 (L3): Windows a veces tarda en reconocer el teléfono (controlador, «Módem USB» que se activa tarde). Antes
+        # había un único intento de 120 s y luego FALLA. Ahora, tras cada espera sin éxito, se pregunta de nuevo.
+        intentos, total = [], 0.0
+        for n in range(1, self.INTENTOS_TELEFONO + 1):
+            enc, s = self._esperar(lambda: [c for c in self._telefonos() if c.usable and c.gateway], self.ESPERA_TELEFONO_S)
+            total += s
+            intentos.append({"intento": n, "s": s, "detectado": bool(enc)})
+            if enc:
+                return {"estado": PASA, "evidencia": FISICA, "intentos": intentos,
+                        "detalle": f"detectado en caliente en el intento {n} ({round(total, 1)} s en total): "
+                                   f"{enc[0].name} [{enc[0].description[:40]}]",
+                        "telefono": [self.resumen_if(c) for c in enc]}
+            if n == self.INTENTOS_TELEFONO:
+                break
+            resp = self.preguntar(f"Windows todavía no muestra el teléfono ({round(total)} s). Revisa el cable, desbloquea el "
+                                  f"teléfono y vuelve a activar «Módem USB». Enter para esperar otros "
+                                  f"{self.ESPERA_TELEFONO_S} s (intento {n + 1} de {self.INTENTOS_TELEFONO}).")
+            if resp is None or resp == "omitir":
+                self.intervenciones.append("Windows no reconoció el teléfono a tiempo: revisar cable, controlador y "
+                                           "«Módem USB», y repetir la validación.")
+                return {"estado": PENDIENTE, "evidencia": FISICA, "intentos": intentos,
+                        "detalle": f"no se detectó en {round(total)} s y se dejó para después"}
+        return {"estado": FALLA, "evidencia": FISICA, "intentos": intentos,
+                "detalle": f"Windows no mostró un teléfono con salida en {len(intentos)} intentos ({round(total)} s)",
+                "vistos": [self.resumen_if(c) for c in self._telefonos()]}
 
     def p06b_caliente(self) -> dict:
         """Desconexión y reconexión física del teléfono: ¿lo ve desaparecer y volver? ¿cambia su identificador?"""
@@ -491,6 +513,8 @@ class Integral:
             if d.name.isdigit():
                 try:
                     campos = (d / "stat").read_text().rsplit(")", 1)[1].split()
+                    if campos[0] in ("Z", "X", "x"):
+                        continue               # E8 (L2): un zombi ya terminó; contarlo como «vivo» ocultaba la caída
                     rss = int((d / "statm").read_text().split()[1]) * pagina
                     hilos = int(campos[17])
                     stats[int(d.name)] = (int(campos[1]), (int(campos[11]) + int(campos[12])) / tick, rss, hilos, d)
