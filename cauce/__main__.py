@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--steps", type=int, default=240)
     p.add_argument("--simulate", action="store_true", help="Mismo guion con el simulador (no es validación física)")
     p.add_argument("--no-browser", action="store_true", help="No abrir la página de sesión de navegador")
+    p.add_argument("--lab-port-offset", type=int, default=0,
+                   help="desplazamiento de los puertos del laboratorio (dos laboratorios a la vez en el mismo equipo)")
     p.add_argument("--engines", choices=["normal", "lab"], default="normal",
                    help="F11: puertos de las instalaciones normales o del laboratorio integrado")
     p = sub.add_parser("routers", help="Muestra lo que ven los routers configurados (solo lectura)")
@@ -234,17 +236,17 @@ def main(argv: list[str] | None = None) -> int:
             prov = None
         return print_report(run_checks(cfg, prov))
     if a.cmd == "fieldcheck":
-        from .fieldcheck import ENGINES, ENGINES_LAB, run as fieldcheck, run_sin_servidor
+        from .fieldcheck import ENGINES, lab_engines, run as fieldcheck, run_sin_servidor
         out = a.out or os.path.join("reports", "fieldcheck-" + time.strftime("%Y%m%d-%H%M%S"))
         if a.objetivo:
             res = run_sin_servidor(a.objetivo, out, simulate=a.simulate, config_path=a.config,
                                    ask=(lambda _msg: None) if a.simulate else input,
-                                   engines=ENGINES_LAB if a.engines == "lab" else ENGINES)
+                                   engines=lab_engines(a.lab_port_offset) if a.engines == "lab" else ENGINES)
             return 0 if not res["failed"] else 1
         res = fieldcheck(a.lab_url, out, simulate=a.simulate, steps=a.steps, config_path=a.config,
                          step_delay_s=0.02 if a.simulate else 1.0, open_browser=not a.no_browser,
                          ask=(lambda _msg: None) if a.simulate else input,
-                         engines=ENGINES_LAB if a.engines == "lab" else ENGINES)
+                         engines=lab_engines(a.lab_port_offset) if a.engines == "lab" else ENGINES)
         return 0 if not res["failed"] else 1
     if a.cmd == "routers":
         from .status import routers_view

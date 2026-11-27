@@ -122,6 +122,16 @@ def http(url: str, metodo: str = "GET", cuerpo=None, token: str | None = None, t
         return None, None
 
 
+def desplazamiento_puertos() -> int:
+    """CAUCE_LAB_DESPLAZAMIENTO_PUERTOS (0–500): segundo laboratorio en el mismo equipo, p. ej. una prueba larga mientras
+    se trabaja en otro. Por omisión 0 (puertos de versiones.json)."""
+    try:
+        v = int(os.environ.get("CAUCE_LAB_DESPLAZAMIENTO_PUERTOS", "0") or 0)
+    except ValueError:
+        return 0
+    return v if 0 <= v <= 500 else 0
+
+
 def entorno_limpio(extra: dict[str, str]) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("MONITOREO_", "CAUCE_", "PLAYWRIGHT_"))}
     env.update(extra)
@@ -132,7 +142,7 @@ def entorno_limpio(extra: dict[str, str]) -> dict[str, str]:
 class Lab:
     def __init__(self, d: Path):
         self.d = d
-        self.p = VERSIONES["puertos"]
+        self.p = {k: v + desplazamiento_puertos() for k, v in VERSIONES["puertos"].items()}
         self.estado_f = d / "estado.json"
         self.estado = json.loads(self.estado_f.read_text("utf-8")) if self.estado_f.exists() else {}
 
@@ -526,7 +536,8 @@ class Lab:
             decir("  Prueba física guiada (te pedirá desconectar y reconectar un enlace).")
             destino = (["--objetivo", self.estado["objetivo"]] if self.estado.get("objetivo")
                        else ["--lab-url", self.estado["lab_url"], "--steps", str(steps)])
-            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", *destino, "--out", str(out), "--engines", "lab"],
+            r = subprocess.run([sys.executable, "-m", "cauce", "fieldcheck", *destino, "--out", str(out), "--engines", "lab",
+                                "--lab-port-offset", str(desplazamiento_puertos())],
                                cwd=str(self.ne), env=entorno_limpio({}))
             js = out / "fieldcheck.json"
             res = json.loads(js.read_text("utf-8")) if js.exists() else {}
