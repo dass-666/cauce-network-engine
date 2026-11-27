@@ -159,6 +159,16 @@ class CauceClient:
     def shutdown(self) -> dict:
         return self._call("POST", "/shutdown", {})
 
+    # E7: marcas «revisar a mano» sin sesión activa (solo admin)
+    def pending_reviews(self) -> list[dict]:
+        return self._call("GET", "/sessions/pending")["pending"]
+
+    def resolve_session(self, session_id: str) -> dict:
+        return self._call("POST", f"/sessions/{session_id}/resolve", {})
+
+    def resolve_pending(self, pending_id: str, note: str, confirm: str) -> dict:
+        return self._call("POST", f"/sessions/pending/{pending_id}/resolve", {"note": note, "confirm": confirm})
+
 
 class CauceReadClient:
     """Cliente de SOLO LECTURA para consumidores con una credencial ``read``.
@@ -238,7 +248,9 @@ class CauceSessionClient:
     Una credencial solo puede tener UNA sesión activa; usa una credencial distinta por sesión.
     """
 
-    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 2.0):
+    # E8: 5 s (antes 2). Un latido que cambia la operación se guarda en disco ANTES de responder (para no perder
+    # «en curso» si el motor cae); en Windows ese guardado llegó a 1,4 s en CI y con carga pasó de 2 s (intermitente).
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 5.0):
         self._c = CauceClient(token, host, port, timeout)
         self.session_id: Optional[str] = None
 

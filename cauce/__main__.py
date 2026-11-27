@@ -12,6 +12,7 @@ Comandos:
   stop         Cierre limpio del motor en marcha.
   labserver    Servidor de laboratorio propio en 127.0.0.1:8770.
   verify-audit Comprueba la integridad del registro de auditoría.
+  revisiones   Marcas «revisar a mano»: list | resolver ID --nota ... --confirmar ETIQUETA (solo el operador).
   token        Credenciales read (Monitor) o session (una sesión de navegador): create | list | revoke | recover (requiere el motor en marcha).
 """
 from __future__ import annotations
@@ -173,13 +174,21 @@ def main(argv: list[str] | None = None) -> int:
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
     tp.add_argument("--name", required=True, help="Sistema consumidor, p. ej. monitor")
-    tp.add_argument("--scope", default="read", choices=["read", "session"],
-                    help="read: Monitor (solo /status/*). session: una sesión de navegador (solo /sessions)")
+    tp.add_argument("--scope", default="read", choices=["read", "session", "review"],
+                    help="read: Monitor (solo /status/*). session: una sesión de navegador (solo /sessions). "
+                         "review: ver y resolver revisiones pendientes (centro de revisiones de Monitor)")
     tp.add_argument("--out", help="Guardar el token protegido (DPAPI en Windows) en este archivo en vez de mostrarlo")
     tsub.add_parser("list")
     tsub.add_parser("recover")
     tp = tsub.add_parser("revoke")
     tp.add_argument("token_id")
+    p = sub.add_parser("revisiones", help="Marcas «revisar a mano» (sesiones activas y marcas sin sesión)")
+    rsub = p.add_subparsers(dest="rcmd", required=True)
+    rsub.add_parser("list")
+    rp = rsub.add_parser("resolver")
+    rp.add_argument("id", help="bs_... (sesión activa) o pm_... (marca sin sesión)")
+    rp.add_argument("--nota", help="Qué revisaste (obligatoria para pm_...). Sin datos personales")
+    rp.add_argument("--confirmar", help="Para pm_...: la etiqueta de la marca, o GENERAL")
     p = sub.add_parser("fieldcheck", help="Validación física guiada con dos enlaces reales (ver docs/VALIDACION_FISICA_WINDOWS.md)")
     g = p.add_mutually_exclusive_group(required=True)
     g.add_argument("--lab-url", help="URL de TU servidor de laboratorio, p. ej. http://servidor-propio:8770")
@@ -342,6 +351,33 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 t = c.revoke_token(a.token_id)
                 print(f"Credencial {t['id']} ({t['name']}) revocada.")
+        except CauceAPIError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        return 0
+    if a.cmd == "revisiones":
+        from .client import CauceAPIError
+        try:
+            if a.rcmd == "list":
+                activas = [s for s in c._call("GET", "/status/sessions").get("sessions", []) if s.get("requires_human")]
+                sueltas = c.pending_reviews()
+                if not activas and not sueltas:
+                    print("No hay nada que revisar a mano.")
+                for s in activas:
+                    print(f"{s['id']}  sesión activa  {s['label']:<24} motivo={s.get('human_reason')}")
+                for p_ in sueltas:
+                    print(f"{p_['id']}  sin sesión     {(p_['label'] or 'GENERAL'):<24} motivo={p_['reason']}  "
+                          f"hace {int(p_['age_s'] // 60)} min  (confirmar con: {p_['confirm_with']})")
+            elif a.id.startswith("pm_"):
+                if not a.nota or not a.confirmar:
+                    print("Error: para una marca sin sesión hacen falta --nota y --confirmar", file=sys.stderr)
+                    return 2
+                r = c.resolve_pending(a.id, a.nota, a.confirmar)
+                print(f"Marca {r['resolved']} ({r['label'] or 'general'}) resuelta. Nada se ha repetido: comprueba en el "
+                      "portal qué pasó con la operación.")
+            else:
+                s = c.resolve_session(a.id)
+                print(f"Sesión {s['id']} ({s['label']}) revisada.")
         except CauceAPIError as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1

@@ -15,7 +15,8 @@ if not defined PY (
 )
 set "PYTHONIOENCODING=utf-8"
 rem Detiene SOLO los procesos que arranco este laboratorio.
-%PY% lab.py detener
+rem E8: si hay una validacion en curso NO se detiene nada (usa Ctrl+C en su ventana). --forzar solo si no responde.
+%PY% lab.py detener %*
 set "RC=%ERRORLEVEL%"
 echo.
 if "%RC%"=="0" (echo Resultado: OK) else (echo Resultado: HAY FALLOS. Revisa el informe en %USERPROFILE%\cauce-lab-integrado\informes)

@@ -78,7 +78,39 @@ def pid_vivo(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             return True                # ante la duda, se considera vivo (no se roba el bloqueo)
         return f'"{pid}"' in out
-    return Path(f"/proc/{pid}").exists()
+    return _proc_vivo(pid)
+
+
+def _proc_vivo(pid: int) -> bool:
+    """Linux/macOS. E8 (L2): un proceso zombi (terminado, a la espera de que su padre lo recoja) NO está vivo."""
+    st = Path(f"/proc/{pid}/stat")
+    if not st.parent.exists():
+        if Path("/proc").is_dir():
+            return False
+        try:                           # sin /proc (macOS): señal 0, que en POSIX no hace nada al proceso
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+    try:
+        estado = st.read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return estado not in ("Z", "X", "x")
+
+
+def ocupante(d: Path) -> dict | None:
+    """E8 (L1): quién tiene el laboratorio en uso, si es OTRO proceso vivo. None si nadie (o soy yo)."""
+    try:
+        otro = json.loads((d / ".en_uso").read_text("utf-8"))
+    except (OSError, ValueError):
+        return None
+    pid = otro.get("pid", 0)
+    if pid == os.getpid() or not pid_vivo(pid):
+        return None
+    return otro
 
 
 class Ocupado(SystemExit):
@@ -633,7 +665,23 @@ class Lab:
         except OSError:
             return ""
 
-    def detener(self, solo: str | None = None) -> dict:
+    def detener(self, solo: str | None = None, forzar: bool = False) -> dict:
+        # E8 (L1): 4_DETENER mataba sin aviso los motores de una validación en curso (la dejaba contaminada).
+        otro = ocupante(self.d)
+        if otro and not forzar:
+            raise Ocupado(f"Hay una validación en curso ({otro.get('quien')}, PID {otro.get('pid')}, desde "
+                          f"{otro.get('desde')}). No se detiene nada. Para cancelarla de forma segura pulsa Ctrl+C en su "
+                          f"ventana (guarda el informe parcial). Solo si esa ventana ya no responde: 4_DETENER.cmd --forzar")
+        if otro:
+            linea = {"cuando": ahora(), "validacion": otro, "aviso": "detención forzada: esa validación NO cuenta"}
+            try:
+                (self.d / "informes").mkdir(parents=True, exist_ok=True)
+                with open(self.d / "informes" / "detenciones_forzadas.jsonl", "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(linea, ensure_ascii=False) + "\n")
+            except OSError:
+                pass
+            decir(f"AVISO: se detiene a la fuerza una validación en curso ({otro.get('quien')}). Esa validación no "
+                  f"cuenta como aprobada; queda anotado en informes/detenciones_forzadas.jsonl")
         hechos = {}
         for nombre, pid in list((self.estado.get("pids") or {}).items()):
             if solo and nombre != solo:
@@ -938,7 +986,8 @@ def main(argv=None) -> int:
     pr.add_argument("--steps", type=int, default=240)
     sub.add_parser("prueba-forms", help="Forms con Chromium en el portal de laboratorio (127.0.0.1), datos ficticios")
     sub.add_parser("informe")
-    sub.add_parser("detener")
+    pd = sub.add_parser("detener")
+    pd.add_argument("--forzar", action="store_true", help="detener aunque haya una validación en curso (no cuenta)")
     pt = sub.add_parser("todo", help="comprobar, iniciar, diagnóstico, pruebas e informe (deja los servicios en marcha)")
     pt.add_argument("--modo", choices=["simulado", "real"], default="simulado")
     pt.add_argument("--lab-url")
@@ -1022,7 +1071,7 @@ def main(argv=None) -> int:
         decir(f"Informe: {lab.informe()}")
         return 0
     if a.cmd == "detener":
-        decir(json.dumps(lab.detener(), ensure_ascii=False))
+        decir(json.dumps(lab.detener(forzar=a.forzar), ensure_ascii=False))
         return 0
     return 2
 

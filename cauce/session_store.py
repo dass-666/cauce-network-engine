@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import secrets
 import threading
@@ -49,13 +50,23 @@ class SessionStore:
         self.path = path
         self.bak = path + ".bak"
         self._lock = threading.Lock()          # dentro de un proceso, una escritura cada vez
+        self._written_seq = 0
 
     # ------------------------------------------------------------------ escritura
-    def save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: Optional[list[dict]] = None) -> None:
+    def save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: Optional[list[dict]] = None,
+             seq: Optional[int] = None) -> bool:
         """Lanza OSError si no se pudo escribir (el llamador lo anota; el motor sigue funcionando).
-        ``pending``: marcas de intervención humana sin resolver de sesiones ya cerradas (E6)."""
+        ``pending``: marcas de intervención humana sin resolver de sesiones ya cerradas (E6).
+        ``seq``: número de foto creciente; una foto más vieja que la última escrita se descarta (E7). False si se
+        descartó."""
         with self._lock:
+            if seq is not None:
+                if seq <= self._written_seq:
+                    return False
             self._save(sessions, closed, saved_at, pending or [])
+            if seq is not None:
+                self._written_seq = seq
+            return True
 
     def _save(self, sessions: list[dict], closed: list[dict], saved_at: float, pending: list[dict]) -> None:
         body = {"schema": SCHEMA, "saved_at": saved_at, "sessions": sessions, "closed": closed, "pending": pending}
@@ -68,16 +79,49 @@ class SessionStore:
                 json.dump(doc, fh, ensure_ascii=False)
                 fh.flush()
                 os.fsync(fh.fileno())
-            if os.path.exists(self.path) and self._read(self.path) is not None:
-                try:
-                    _replace(self.path, self.bak)        # la versión buena anterior queda de respaldo
-                except FileNotFoundError:
-                    pass                                 # otro escritor la movió entre medias: su respaldo vale igual
+            previo = self._bytes_validos(self.path)
+            if previo is not None:
+                # E8: la versión buena anterior se COPIA al respaldo (antes se movía). Al moverla, el principal no
+                # existía durante un instante y una muerte brusca justo ahí arrancaba desde el respaldo, con una
+                # revisión humana innecesaria de todas las sesiones (21 % de 150 muertes con guardado continuo).
+                self._copiar_a_respaldo(previo)
             _replace(tmp, self.path)
         finally:
             if os.path.exists(tmp):
                 try:
                     os.remove(tmp)
+                except OSError:
+                    pass
+
+    def _bytes_validos(self, path: str) -> Optional[bytes]:
+        """El contenido del archivo si es un estado válido; None si no existe, no se puede leer o está dañado.
+        Se lee UNA vez y esos mismos bytes van al respaldo (en Windows, cada apertura extra puede chocar con el
+        reemplazo de otro escritor)."""
+        try:
+            if os.path.getsize(path) > MAX_BYTES:
+                return None
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return raw if self._parse(raw) is not None else None
+
+    def _copiar_a_respaldo(self, data: bytes) -> None:
+        """Mejor esfuerzo y sin fsync: el respaldo es la versión ANTERIOR y su resumen se comprueba al leerlo. Solo el
+        principal (la versión nueva) se fuerza a disco antes de responder. E8: en Windows cada fsync puede tardar más
+        de 1 s (diagnostico-latido) y el cliente de sesión espera 2 s; dos fsync por latido eran demasiados."""
+        btmp = f"{self.bak}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+        try:
+            fd = os.open(btmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            _replace(btmp, self.bak)
+        except OSError:
+            pass                                         # sin respaldo nuevo queda el anterior; el principal no se toca
+        finally:
+            if os.path.exists(btmp):
+                try:
+                    os.remove(btmp)
                 except OSError:
                     pass
 
@@ -87,9 +131,17 @@ class SessionStore:
         try:
             if os.path.getsize(path) > MAX_BYTES:
                 return None
-            with open(path, encoding="utf-8") as fh:
-                doc = json.load(fh)
-        except (OSError, ValueError):
+            with open(path, "rb") as fh:
+                raw = fh.read()
+        except OSError:
+            return None
+        return SessionStore._parse(raw)
+
+    @staticmethod
+    def _parse(raw: bytes) -> Optional[dict]:
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
             return None
         if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
             return None
@@ -153,10 +205,23 @@ def clean_pending(d: Any) -> Optional[dict]:
     if not isinstance(d, dict):
         return None
     out = {k: d.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}
+    pid = d.get("id")
     if not isinstance(out["reason"], str) or not out["reason"]:
         return None
     if any(out[k] is not None and not isinstance(out[k], str) for k in ("owner_token_id", "label", "session_id")):
         return None
     if not isinstance(out["since"], (int, float)):
         return None
+    # E7: id inequívoco. Un archivo anterior no lo trae: se deriva de la marca, así es estable entre reinicios.
+    if not (isinstance(pid, str) and PENDING_ID_RE.match(pid)):
+        pid = pending_id_for(out)
+    out["id"] = pid
     return out
+
+
+PENDING_ID_RE = re.compile(r"^pm_[0-9a-f]{12}$")
+
+
+def pending_id_for(p: dict) -> str:
+    raw = json.dumps({k: p.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}, sort_keys=True)
+    return "pm_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]

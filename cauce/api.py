@@ -33,7 +33,7 @@ from .policy import PolicyError, RotationDisabled
 from .routing import RouteError
 from .sessions import SessionError
 from .status import MAX_EVENTS, connectivity_view, events_view, routers_view, sessions_view
-from .tokens import SCOPE_ADMIN, SCOPE_READ, SCOPE_SESSION, AccessLog, Principal, TokenError, TokenStore
+from .tokens import SCOPE_ADMIN, SCOPE_READ, SCOPE_REVIEW, SCOPE_SESSION, AccessLog, Principal, TokenError, TokenStore
 
 
 def _allowed(have: str, need: str) -> bool:
@@ -184,6 +184,16 @@ class CauceAPI:
         def sess_resolve(req, m, q, body):
             # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
             return e.sessions.view(e.sessions.resolve(m["sid"]))
+
+        # E7: marcas de «revisar a mano» cuya sesión ya no existe. admin o (E8) la credencial «review».
+        @r("GET", P + "/sessions/pending", SCOPE_REVIEW)
+        def sess_pending(req, m, q, body):
+            return {"pending": e.sessions.pending()}
+
+        @r("POST", P + r"/sessions/pending/(?P<pid>pm_[0-9a-f]{12})/resolve", SCOPE_REVIEW)
+        def sess_pending_resolve(req, m, q, body):
+            p = req._cauce_principal
+            return e.sessions.resolve_pending(m["pid"], body, resolved_by=p.name)
 
         @r("GET", P + "/tokens")
         def tokens_list(req, m, q, body):
@@ -438,6 +448,8 @@ class CauceAPI:
             body: dict = {}
             if method in ("POST", "DELETE"):
                 n = int(h.headers.get("Content-Length") or 0)
+                if n < 0:   # E7: rfile.read(-1) esperaría hasta que el cliente cerrara, ocupando el hilo
+                    return self._error(h, 400, "invalid_request", "Content-Length negativo")
                 if n > MAX_BODY:
                     return self._error(h, 413, "too_large", "Cuerpo demasiado grande")
                 if n:
@@ -477,7 +489,8 @@ class CauceAPI:
         except (ValueError, TypeError) as e:
             self._error(h, 400, "invalid_request", str(e))
         except Exception as e:
-            self.engine.audit.record("error", f"Error interno de API: {e!r}", path=h.path)
+            self.engine.audit.record("error", f"Error interno de API: {e!r}"[:500],
+                                     path=urlsplit(getattr(h, "path", "")).path)   # E7: sin valores de la consulta
             self._error(h, 500, "internal_error", "Error interno; ver registro de errores")
 
     # ------------------------------------------------------------------

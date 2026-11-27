@@ -71,8 +71,9 @@ class SesionDiagnostico:
             v = self.c.register(self.etiqueta, connection_id=self.conexion, heartbeat_timeout_s=self.latido_max_s)
         except CauceAPIError as e:
             return self._error_api(e)
-        except OSError:
-            return self._fijar(EstadoVisible(SIN_INFORMACION))
+        except OSError as e:
+            # E8: se guarda el tipo de error (p. ej. TimeoutError) para poder diagnosticar; nunca su texto
+            return self._fijar(EstadoVisible(SIN_INFORMACION, detalle={"error": type(e).__name__}))
         return self._desde_vista(v)
 
     def latir(self, ok: bool = True, error_code: Optional[str] = None, operation: Optional[str] = None) -> EstadoVisible:
@@ -90,8 +91,9 @@ class SesionDiagnostico:
                 self.c.session_id = None
                 return self._registrar()
             return self._error_api(e)
-        except OSError:
-            return self._fijar(EstadoVisible(SIN_INFORMACION))
+        except OSError as e:
+            # E8: se guarda el tipo de error (p. ej. TimeoutError) para poder diagnosticar; nunca su texto
+            return self._fijar(EstadoVisible(SIN_INFORMACION, detalle={"error": type(e).__name__}))
         return self._desde_vista(v)
 
     def cerrar(self) -> None:
@@ -111,7 +113,7 @@ class SesionDiagnostico:
         # mínimo y se espera cualquier pausa por 429 (repetir un LATIDO es inocuo; la acción nunca se repite).
         self._esperar_turno()
         antes = self.latir(operation="in_progress")
-        if antes.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
+        if antes.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA):
             self.marcas_no_enviadas += 1
         try:
             yield self
@@ -128,7 +130,7 @@ class SesionDiagnostico:
             raise
         self._esperar_turno()
         despues = self.latir(operation="idle")
-        if despues.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
+        if despues.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA):   # E7: 401 tampoco llegó
             self.marcas_no_enviadas += 1
 
     def _esperar_turno(self) -> None:
@@ -155,7 +157,8 @@ class SesionDiagnostico:
 
     def _fijar(self, e: EstadoVisible) -> EstadoVisible:
         # una marca de persona ya vista no se «olvida» en la interfaz porque el motor deje de responder
-        if e.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE) and self.ultimo.requiere_persona:
+        # E7: tampoco si la credencial deja de valer (401): la marca sigue en el motor y la persona debe verla
+        if e.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA) and self.ultimo.requiere_persona:
             e.requiere_persona = True
             e.motivo = e.motivo or self.ultimo.motivo
         self.ultimo = e

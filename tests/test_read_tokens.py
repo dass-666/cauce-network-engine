@@ -404,7 +404,7 @@ class RevisionPr45Test(Base):
             raw = pat.pattern[1:-1]
             def fill(m):
                 body = m.group(1)
-                return next(c for c in ("sim-a", "00000000", "ls_abc", "tk_abc", "bs_0123456789ab", "activate", "r", "1")
+                return next(c for c in ("sim-a", "00000000", "ls_abc", "tk_abc", "bs_0123456789ab", "pm_0123456789ab", "activate", "r", "1")
                             if re.fullmatch(body, c))
             path = re.sub(r"\(\?P<\w+>((?:[^()]|\([^()]*\))*)\)", fill, raw)
             if not pat.match(path):

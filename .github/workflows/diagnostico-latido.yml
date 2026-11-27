@@ -1,0 +1,38 @@
+name: diagnostico-latido
+# E8: mide la latencia del latido y del guardado en disco para investigar el intermitente de Windows
+# (test_contrato_forms, 'sin_informacion' != 'activa', visto una vez en Windows · Py3.10). Red simulada, loopback.
+on:
+  push:
+    branches: [claude/e8-rc3]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  latido:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: 300 ciclos registro → en curso → terminado
+        run: python scripts/diagnostico/latido_windows.py --ciclos 300 --salida reports/diagnostico-latido.json
+      - name: La prueba intermitente, 40 veces
+        working-directory: tests
+        shell: bash
+        run: |
+          f=0
+          for i in $(seq 1 40); do python -m unittest -q test_contrato_forms.ContratoTest.test_ciclo_normal_y_solo_campos_permitidos 2>&1 | tail -1 | grep -q OK || f=$((f+1)); done
+          echo "fallos=$f de 40" | tee ../reports/intermitente-40.txt
+          test $f -eq 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: diagnostico-latido-${{ matrix.os }}-${{ matrix.python }}
+          path: reports/
