@@ -111,7 +111,7 @@ class SesionDiagnostico:
         # mínimo y se espera cualquier pausa por 429 (repetir un LATIDO es inocuo; la acción nunca se repite).
         self._esperar_turno()
         antes = self.latir(operation="in_progress")
-        if antes.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
+        if antes.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA):
             self.marcas_no_enviadas += 1
         try:
             yield self
@@ -128,7 +128,7 @@ class SesionDiagnostico:
             raise
         self._esperar_turno()
         despues = self.latir(operation="idle")
-        if despues.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
+        if despues.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA):   # E7: 401 tampoco llegó
             self.marcas_no_enviadas += 1
 
     def _esperar_turno(self) -> None:
@@ -155,7 +155,8 @@ class SesionDiagnostico:
 
     def _fijar(self, e: EstadoVisible) -> EstadoVisible:
         # una marca de persona ya vista no se «olvida» en la interfaz porque el motor deje de responder
-        if e.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE) and self.ultimo.requiere_persona:
+        # E7: tampoco si la credencial deja de valer (401): la marca sigue en el motor y la persona debe verla
+        if e.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA) and self.ultimo.requiere_persona:
             e.requiere_persona = True
             e.motivo = e.motivo or self.ultimo.motivo
         self.ultimo = e
