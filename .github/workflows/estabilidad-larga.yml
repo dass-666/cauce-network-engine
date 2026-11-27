@@ -1,0 +1,48 @@
+name: estabilidad-larga
+# Pruebas largas de estabilidad del laboratorio integrado en Windows (red SIMULADA, sin tráfico a terceros).
+# Solo se ejecuta al subir a la rama claude/e5-estabilidad-windows. GitHub limita cada trabajo a 6 h, así que el
+# perfil nocturno (8 h) se acorta a 5 h 40 min: el informe dice la duración real, nunca 8 h.
+on:
+  push:
+    branches: [claude/e5-estabilidad-windows]
+jobs:
+  largo:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - perfil: prolongado
+            duracion: 3600
+            minutos: 90
+          - perfil: nocturno
+            duracion: 20400
+            minutos: 358
+    name: Estabilidad ${{ matrix.perfil }} · Windows (${{ matrix.duracion }} s, red simulada)
+    runs-on: windows-latest
+    timeout-minutes: ${{ matrix.minutos }}
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Instalar el laboratorio (Monitor y Forms en los commits fijados, Chromium de Forms)
+        shell: cmd
+        run: scripts\laboratorio_integrado\1_INSTALAR.cmd --navegador-forms
+      - name: 7_VALIDACION_INTEGRAL.cmd ${{ matrix.perfil }} (no interactivo, red simulada)
+        shell: cmd
+        run: scripts\laboratorio_integrado\7_VALIDACION_INTEGRAL.cmd ${{ matrix.perfil }} --no-interactivo --duracion ${{ matrix.duracion }}
+      - name: Detener
+        if: always()
+        shell: cmd
+        run: |
+          call scripts\laboratorio_integrado\4_DETENER.cmd
+          exit /b 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: estabilidad-${{ matrix.perfil }}-windows
+          path: |
+            ~/cauce-lab-integrado/informes/
+            ~/cauce-lab-integrado/datos/logs/
