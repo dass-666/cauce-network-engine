@@ -7,6 +7,12 @@
   error no provoca conmutación (evita oscilaciones).
 - Sin ciclos infinitos ni sondeo agresivo: cuando una conexión está DOWN, el
   intervalo crece exponencialmente hasta ``max_interval_s``.
+- 0.2.0: cuando una conexión DOWN responde bien una vez, el siguiente sondeo de confirmación se hace al
+  intervalo normal (no con el retroceso acumulado). La histéresis no cambia (siguen haciendo falta
+  ``recover_threshold`` éxitos), pero la recuperación ya no tarda dos esperas largas sino como mucho una.
+- 0.2.0: cada conexión informa cuándo se sondeó por última vez. Si el último sondeo es más viejo que
+  ``stale_after_s()`` (p. ej. porque el hilo de salud se atascó), su estado se marca como NO VERIFICADO
+  para que nadie muestre como sana una conexión que ya no se está midiendo.
 """
 from __future__ import annotations
 
@@ -45,6 +51,7 @@ class ConnHealth:
     last_change: float = field(default_factory=time.time)
     next_due: float = 0.0
     backoff_level: int = 0
+    last_probe: Optional[float] = None
     samples: deque = field(default_factory=lambda: deque(maxlen=50))
 
     def to_dict(self) -> dict:
@@ -62,6 +69,8 @@ class ConnHealth:
             "last_error": self.last_error,
             "last_change": self.last_change,
             "backoff_level": self.backoff_level,
+            "last_probe": self.last_probe,
+            "next_due": self.next_due,
         }
 
 
@@ -82,8 +91,18 @@ class HealthMonitor:
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+    def stale_after_s(self) -> float:
+        """Antigüedad máxima del último sondeo para que su resultado siga valiendo: dos esperas máximas más los
+        tiempos de espera de todos los destinos (un ciclo lento pero vivo nunca llega a esto)."""
+        return 2 * self.cfg.max_interval_s + self.cfg.timeout_s * max(1, len(self.cfg.targets)) + 5
+
     def on_change(self, fn: Listener) -> None:
         self._listeners.append(fn)
+
+    def forget(self, conn_id: str) -> None:
+        """La conexión ya no existe: su salud deja de figurar (no queda «sana» para siempre)."""
+        with self._lock:
+            self._state.pop(conn_id, None)
 
     def state_of(self, conn_id: str) -> Health:
         with self._lock:
@@ -104,6 +123,7 @@ class HealthMonitor:
             for r in results:
                 h.samples.append(r)
             h.probes += 1
+            h.last_probe = now
             if ok:
                 h.consecutive_ok += 1
                 h.consecutive_fail = 0
@@ -129,7 +149,10 @@ class HealthMonitor:
                 else:
                     new = old
             # Programación del siguiente sondeo con retroceso exponencial
-            if new == Health.DOWN:
+            if new == Health.DOWN and ok:
+                # Recuperación en curso: confirmar pronto, sin acumular más retroceso.
+                delay = self.cfg.interval_s
+            elif new == Health.DOWN:
                 h.backoff_level = min(h.backoff_level + 1, 10)
                 delay = min(self.cfg.interval_s * (2 ** (h.backoff_level - 1)), self.cfg.max_interval_s)
             else:

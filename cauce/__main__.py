@@ -48,7 +48,7 @@ def _setup_logging(data_dir: str, verbose: bool) -> str:
 def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     from .api import CauceAPI
     from .engine import Engine
-    from .secrets_store import write_secret
+    from .secrets_store import storage_method, write_secret
 
     log_path = _setup_logging(cfg["data_dir"], False)
     log = logging.getLogger("cauce")
@@ -72,11 +72,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
     if sim is not None:
         api.enable_sim_control(sim)
     token_path = os.path.join(cfg["data_dir"], "api.token")
-    method = write_secret(token_path, api.token)
     info_path = os.path.join(cfg["data_dir"], "api.json")
-    with open(info_path, "w", encoding="utf-8") as fh:
-        json.dump({"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
-                   "started": time.time(), "token_storage": method}, fh)
+    for p in (token_path, info_path):   # restos de una ejecución que no se cerró bien: no deben parecer «listo»
+        try:
+            os.remove(p)
+        except OSError:
+            pass
 
     stop = threading.Event()
 
@@ -91,6 +92,12 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
 
     engine.start()
     api.start()
+    # Los archivos de descubrimiento se escriben cuando la API ya atiende, cada uno de forma atómica, y
+    # api.token el último: quien espera a que exista api.token encuentra también api.json con el puerto
+    # correcto y una API que responde (antes había una ventana en la que el CLI usaba el puerto por defecto).
+    _write_json_atomic(info_path, {"port": api.port, "pid": os.getpid(), "mode": mode, "version": __version__,
+                                   "started": time.time(), "token_storage": storage_method()})
+    write_secret(token_path, api.token, atomic=True)
     url = f"http://127.0.0.1:{api.port}/?t={api.token}"
     log.info("Cauce %s en modo %s. API: http://127.0.0.1:%s/api/v1  Registro: %s", __version__, mode, api.port, log_path)
     if mode == "simulated":
@@ -112,6 +119,15 @@ def _serve(cfg: dict, mode: str, open_browser: bool) -> int:
                 pass
         log.info("Cierre limpio completado.")
     return 0
+
+
+def _write_json_atomic(path: str, data: dict) -> None:
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def _client(cfg: dict):
@@ -147,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("stop")
     p = sub.add_parser("labserver")
     p.add_argument("--port", type=int, default=8770)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="Dirección de escucha. 0.0.0.0 solo en TU servidor de laboratorio, nunca en el equipo de trabajo")
     p = sub.add_parser("token")
     tsub = p.add_subparsers(dest="tcmd", required=True)
     tp = tsub.add_parser("create")
@@ -157,6 +175,20 @@ def main(argv: list[str] | None = None) -> int:
     tsub.add_parser("recover")
     tp = tsub.add_parser("revoke")
     tp.add_argument("token_id")
+    p = sub.add_parser("fieldcheck", help="Validación física guiada con dos enlaces reales (ver docs/VALIDACION_FISICA_WINDOWS.md)")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--lab-url", help="URL de TU servidor de laboratorio, p. ej. http://servidor-propio:8770")
+    g.add_argument("--objetivo", help="Sin servidor propio: host:puerto que estés autorizado a usar; solo se abre y cierra "
+                                      "una conexión TCP por enlace (F1, F2, F3, F6, F7, F10–F12)")
+    p.add_argument("--out", default=None, help="Carpeta del informe (por defecto reports/fieldcheck-<fecha>)")
+    p.add_argument("--steps", type=int, default=240)
+    p.add_argument("--simulate", action="store_true", help="Mismo guion con el simulador (no es validación física)")
+    p.add_argument("--no-browser", action="store_true", help="No abrir la página de sesión de navegador")
+    p.add_argument("--lab-port-offset", type=int, default=0,
+                   help="desplazamiento de los puertos del laboratorio (dos laboratorios a la vez en el mismo equipo)")
+    p.add_argument("--engines", choices=["normal", "lab"], default="normal",
+                   help="F11: puertos de las instalaciones normales o del laboratorio integrado")
+    p = sub.add_parser("routers", help="Muestra lo que ven los routers configurados (solo lectura)")
     p = sub.add_parser("verify-audit")
     p.add_argument("path", nargs="?")
     a = ap.parse_args(argv)
@@ -203,10 +235,35 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             prov = None
         return print_report(run_checks(cfg, prov))
+    if a.cmd == "fieldcheck":
+        from .fieldcheck import ENGINES, lab_engines, run as fieldcheck, run_sin_servidor
+        out = a.out or os.path.join("reports", "fieldcheck-" + time.strftime("%Y%m%d-%H%M%S"))
+        if a.objetivo:
+            res = run_sin_servidor(a.objetivo, out, simulate=a.simulate, config_path=a.config,
+                                   ask=(lambda _msg: None) if a.simulate else input,
+                                   engines=lab_engines(a.lab_port_offset) if a.engines == "lab" else ENGINES)
+            return 0 if not res["failed"] else 1
+        res = fieldcheck(a.lab_url, out, simulate=a.simulate, steps=a.steps, config_path=a.config,
+                         step_delay_s=0.02 if a.simulate else 1.0, open_browser=not a.no_browser,
+                         ask=(lambda _msg: None) if a.simulate else input,
+                         engines=lab_engines(a.lab_port_offset) if a.engines == "lab" else ENGINES)
+        return 0 if not res["failed"] else 1
+    if a.cmd == "routers":
+        from .status import routers_view
+        from .engine import Engine
+        from .simulator import SimulatedNetwork, three_links
+        net = SimulatedNetwork(three_links())
+        eng = Engine(cfg, net, net, mode="simulated")
+        for rw in eng.routers:
+            rw.poll(force=True)
+        print(json.dumps(routers_view(eng, time.time()), ensure_ascii=False, indent=2))
+        if not eng.routers:
+            print("Sin routers configurados (clave \"routers\" en config.json; solo transporte simulado).")
+        return 0
     if a.cmd == "labserver":
         from .labserver import LabServer
-        srv = LabServer(port=a.port).start()
-        print(f"Servidor de laboratorio en http://127.0.0.1:{srv.port} (Ctrl+C para cerrar)")
+        srv = LabServer(host=a.host, port=a.port).start()
+        print(f"Servidor de laboratorio en http://{a.host}:{srv.port} (Ctrl+C para cerrar)")
         try:
             while True:
                 time.sleep(1)

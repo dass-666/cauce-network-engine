@@ -29,6 +29,10 @@ class PolicyError(Exception):
     pass
 
 
+class RotationDisabled(PolicyError):
+    """La rotación no está permitida en este motor (motor real sin laboratorio declarado)."""
+
+
 @dataclass
 class RotationPolicy:
     name: str
@@ -61,14 +65,23 @@ class RotationPolicy:
 
 
 class RotationController:
-    def __init__(self, routes: RouteManager, audit: AuditLog, clock: Callable[[], float] = time.time):
+    def __init__(self, routes: RouteManager, audit: AuditLog, clock: Callable[[], float] = time.time,
+                 enabled: bool = True):
         self.routes = routes
+        # False con el motor real salvo ``lab.rotation_enabled`` (ver engine.py): ninguna política
+        # puede crearse ni activarse. Así la rotación no existe fuera de un laboratorio declarado.
+        self.enabled = enabled
         self.audit = audit
         self.clock = clock
         self._policies: dict[str, RotationPolicy] = {}
         self._lock = threading.RLock()
 
+    def _require_enabled(self) -> None:
+        if not self.enabled:
+            raise RotationDisabled("La rotación está desactivada fuera del laboratorio (lab.rotation_enabled = false)")
+
     def create(self, name: str, pool: list[str], interval_s: float = 60.0, max_changes_per_hour: int = 20) -> RotationPolicy:
+        self._require_enabled()
         p = RotationPolicy(name=name, pool=list(pool), interval_s=float(interval_s),
                            max_changes_per_hour=int(max_changes_per_hour))
         p.validate()
@@ -106,6 +119,8 @@ class RotationController:
     def set_state(self, name: str, state: str, reason: str = "operador") -> RotationPolicy:
         if state not in ("active", "paused", "stopped"):
             raise PolicyError("Estado inválido")
+        if state == "active":
+            self._require_enabled()
         p = self.get(name)
         with self._lock:
             if p.state == "stopped":

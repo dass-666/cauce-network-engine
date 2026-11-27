@@ -21,6 +21,10 @@ import urllib.request
 from typing import Any, Optional
 from urllib.parse import quote
 
+# Copia literal de cauce.DEFAULT_API_PORT: este archivo debe poder copiarse a otro proyecto sin el paquete.
+# Una prueba comprueba que ambos coinciden.
+DEFAULT_API_PORT = 8780
+
 
 class CauceAPIError(Exception):
     def __init__(self, status: int, code: str, message: str):
@@ -31,7 +35,7 @@ class CauceAPIError(Exception):
 class CauceClient:
     API = "/api/v1"
 
-    def __init__(self, token: str, host: str = "127.0.0.1", port: int = 8765, timeout: float = 10.0):
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 10.0):
         if host != "127.0.0.1":
             raise ValueError("El cliente solo habla con la API local en 127.0.0.1")
         self.base = f"http://{host}:{port}"
@@ -46,7 +50,7 @@ class CauceClient:
         from .secrets_store import read_secret
         d = data_dir or default_data_dir()
         info_path = os.path.join(d, "api.json")
-        port = 8765
+        port = DEFAULT_API_PORT
         if os.path.exists(info_path):
             with open(info_path, "r", encoding="utf-8") as fh:
                 port = int(json.load(fh).get("port", port))
@@ -160,7 +164,7 @@ class CauceReadClient:
     """Cliente de SOLO LECTURA para consumidores con una credencial ``read``.
 
     No tiene métodos de administración, rutas, tareas ni ``refresh``: aunque los tuviera, el servidor
-    respondería 403. Solo llama a /ping, /status/connectivity y /status/events.
+    respondería 403. Solo llama a /ping, /status/connectivity, /status/routers y /status/events.
 
     Regla de fallo seguro de ``connectivity_or_unknown``:
     - Motor sin respuesta (apagado, tiempo agotado, JSON ilegible) o error 5xx (p. ej. 503 ``credentials_locked``):
@@ -175,7 +179,7 @@ class CauceReadClient:
 
     HALT_STATUSES = (400, 401, 403)
 
-    def __init__(self, token: str, host: str = "127.0.0.1", port: int = 8765, timeout: float = 2.0):
+    def __init__(self, token: str, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, timeout: float = 2.0):
         self._c = CauceClient(token, host, port, timeout)
         self.halted: Optional[CauceAPIError] = None
 
@@ -184,7 +188,7 @@ class CauceReadClient:
         self.halted = None
 
     @classmethod
-    def from_token_file(cls, token_path: str, port: int = 8765, **kw) -> "CauceReadClient":
+    def from_token_file(cls, token_path: str, port: int = DEFAULT_API_PORT, **kw) -> "CauceReadClient":
         """Lee el token de un archivo creado con ``cauce token create --out`` (protegido con DPAPI en Windows)."""
         from .secrets_store import read_secret
         return cls(read_secret(token_path), port=port, **kw)
@@ -194,6 +198,9 @@ class CauceReadClient:
 
     def connectivity(self) -> dict:
         return self._c._call("GET", "/status/connectivity")
+
+    def routers(self) -> dict:
+        return self._c._call("GET", "/status/routers")
 
     def events(self, since: int = 0, limit: int = 200) -> dict:
         return self._c._call("GET", f"/status/events?since={int(since)}&limit={int(limit)}")

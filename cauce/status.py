@@ -19,6 +19,7 @@ from .models import Health
 
 SCHEMA_CONNECTIVITY = "cauce.connectivity/1"
 SCHEMA_EVENTS = "cauce.status-events/1"
+SCHEMA_ROUTERS = "cauce.routers/1"
 
 # Tipos de evento visibles para un consumidor y los únicos campos de ``data`` que se copian.
 _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -27,6 +28,7 @@ _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     "inventory.added": ("connection_id",),
     "inventory.changed": ("connection_id",),
     "inventory.removed": ("connection_id",),
+    "router.state": ("router", "old", "new", "active_wan", "reason"),
     "engine.start": (),
     "engine.stop": (),
 }
@@ -45,17 +47,33 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
       usable      al menos una conexión disponible y sana
       degraded    hay conexión disponible, pero todas con latencia alta o fallos parciales
       unavailable hay mediciones y ninguna conexión está disponible
-      unknown     todavía no hay mediciones suficientes (ver ``reason``); ``usable`` es null
+      unknown     todavía no hay mediciones suficientes, o las que hay son viejas (``reason``:
+                  ``insufficient_measurements`` / ``stale_measurements``); ``usable`` es null
     ``usable`` es true/false solo cuando el motor tiene base para decirlo; si no, null.
     Este documento solo existe si el motor responde: si no responde, el consumidor
     debe concluir "sin información", NUNCA "sin internet" (ver docs/LECTURA_PROTEGIDA.md).
     """
     snap = engine.health.snapshot()
+    stale_after = engine.health.stale_after_s()
     conns = []
     for c in sorted(engine.connections(), key=lambda c: c.id):
         h = snap.get(c.id, {})
         state = h.get("state", Health.UNKNOWN.value)
         measured = bool(h.get("probes", 0)) and state != Health.UNKNOWN.value
+        last = h.get("last_probe")
+        age = round(max(0.0, now - last), 1) if isinstance(last, (int, float)) else None
+        # 0.2.0: un resultado viejo no vale como estado actual (hilo de salud atascado, reloj, etc.)
+        stale = measured and (age is None or age > stale_after)
+        nxt = h.get("next_due")
+        # E4: veredicto único por conexión. «unverified» = sin medir o medición vieja (nunca se da por buena).
+        if c.link.value != "up" or (measured and not stale and state == Health.DOWN.value):
+            status = "down"
+        elif not measured or stale:
+            status = "unverified"
+        elif state == Health.DEGRADED.value:
+            status = "degraded"
+        else:
+            status = "ok"
         conns.append({
             "id": c.id,
             "kind": c.kind.value,
@@ -65,11 +83,20 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
             "health": state,
             "availability_pct": h.get("availability_pct"),
             "avg_latency_ms": h.get("avg_latency_ms"),
+            # 0.2.0 (diagnóstico, sin datos sensibles): antigüedad del último sondeo, si ya no vale,
+            # si una conexión caída está confirmando su recuperación y cuándo toca el siguiente sondeo
+            "last_probe_age_s": age,
+            "stale": stale,
+            "recovering": state == Health.DOWN.value and h.get("consecutive_ok", 0) > 0,
+            "next_probe_in_s": round(max(0.0, nxt - now), 1) if isinstance(nxt, (int, float)) and nxt else None,
+            "status": status,
         })
     candidates = [x for x in conns if x["link"] == "up"]
-    healthy = [x for x in conns if x["available"] and x["health"] == Health.HEALTHY.value]
-    degraded = [x for x in conns if x["available"] and x["health"] == Health.DEGRADED.value]
+    fresh = [x for x in conns if not x["stale"]]
+    healthy = [x for x in fresh if x["available"] and x["health"] == Health.HEALTHY.value]
+    degraded = [x for x in fresh if x["available"] and x["health"] == Health.DEGRADED.value]
     pending = [x for x in candidates if not x["measured"]]
+    stale_up = [x for x in candidates if x["stale"]]
     reason = None
     if healthy:
         state, usable = "usable", True
@@ -77,6 +104,8 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
         state, usable = "degraded", True
     elif pending:
         state, usable, reason = "unknown", None, "insufficient_measurements"
+    elif stale_up:
+        state, usable, reason = "unknown", None, "stale_measurements"
     else:
         state, usable = "unavailable", False
         reason = "no_active_links" if not candidates else "all_measured_connections_down"
@@ -132,3 +161,30 @@ def events_view(engine: Engine, since: int, limit: int) -> dict[str, Any]:
         "next_since": next_since,
         "events": out,
     }
+
+
+def routers_view(engine: Engine, now: float) -> dict[str, Any]:
+    """Lo que ven los routers configurados (solo lectura; en esta versión, transportes simulados).
+
+    Por router: ``state`` (usable | degraded | unavailable | unknown), ``reason``, ``active_wan`` y por WAN
+    etiqueta, tipo, enlace, internet, activa, latencia y pérdida. Sin IP, MAC, gateways ni credenciales.
+    ``simulated`` es true mientras el transporte sea simulado: un consumidor NO debe presentarlo como real.
+    Como /status/connectivity, solo usa lo que el motor ya tiene en memoria (no consulta al router).
+    """
+    routers = []
+    for rw in engine.routers:
+        snap = rw.last
+        if snap is None:
+            routers.append({"router": rw.name, "vendor": rw.observer.vendor, "simulated": True, "state": "unknown",
+                            "reason": "not_observed_yet", "active_wan": None, "observed_at": None, "wans": []})
+            continue
+        routers.append({
+            "router": snap.router, "vendor": snap.vendor, "simulated": True,
+            "state": snap.state, "reason": snap.reason, "active_wan": snap.active_wan,
+            "observed_at": _iso(snap.observed_at),
+            "wans": [{"label": w.label, "kind": w.kind, "link_up": w.link_up, "internet": w.internet,
+                      "active": w.active, "latency_ms": w.latency_ms, "loss_pct": w.loss_pct} for w in snap.wans],
+        })
+    return {"schema": SCHEMA_ROUTERS, "api": API_VERSION,
+            "engine": {"version": __version__, "mode": engine.mode, "epoch": engine.audit.epoch},
+            "generated_at": _iso(now), "routers": routers}

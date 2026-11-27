@@ -1,6 +1,6 @@
 # API local v1
 
-Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON UTF‑8.
+Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8780 desde 0.2.0; antes 8765, que ahora usa Cauce Forms. Variable `CAUCE_NE_PORT` o `api.port` en config.json). Formato JSON UTF‑8.
 
 ## Seguridad
 
@@ -16,7 +16,7 @@ Base: `http://127.0.0.1:<puerto>/api/v1` (puerto por defecto 8765). Formato JSON
 ### Permisos (desde esta rama)
 
 El token de sesión es `admin`. Además hay credenciales `read` por sistema que **solo** llegan a `/ping`, `/status/connectivity`
-y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
+`/status/routers` (desde 0.2.0, ver [ROUTERS.md](ROUTERS.md)) y `/status/events` (`403 insufficient_scope` en lo demás; `401 token_revoked` si se revocó). Gestión de credenciales (solo `admin`):
 `GET/POST /tokens`, `POST /tokens/recover`, `DELETE /tokens/{id}` (`503 revocation_not_persisted` si la revocación no pudo guardarse; las `read` quedan en `503 credentials_locked` hasta recuperar). Detalle, límites y riesgos en [LECTURA_PROTEGIDA.md](LECTURA_PROTEGIDA.md).
 
 ## Errores
@@ -125,3 +125,29 @@ Cada evento: `{"seq", "ts", "kind", "message", "data", "prev", "hash"}`. Tipos p
 `route.failover`, `route.failback`, `route.rotation`, `route.verified`, `route.mismatch`,
 `task.*`, `service.limit`, `rotation.*`, `engine.*`, `error`.
 `hash` encadena cada evento con el anterior; `cauce verify-audit` detecta ediciones.
+
+
+## Cambios en 0.2.0
+
+- Puerto por defecto **8780** (ver [PUERTOS.md](PUERTOS.md)).
+- Con el motor real (`cauce run`) la rotación está **apagada**: `POST /rotation` y `.../activate` responden
+  `403 rotation_disabled` salvo `"lab": {"rotation_enabled": true}` en la configuración de un laboratorio propio.
+  El simulador la conserva para el escenario.
+- `GET /status/routers` (`read`): observación de routers, solo simulada en esta versión.
+- `GET /diagnostics` añade `rotation_enabled` y `routers`.
+- `GET /status/connectivity`: cada conexión añade `last_probe_age_s` (segundos desde su último sondeo), `stale`
+  (el resultado ya no vale: el último sondeo es más viejo que `2 × max_interval_s + timeout × destinos + 5 s`),
+  `recovering` (estaba caída y ya respondió bien, falta confirmar) y `next_probe_in_s`. Una conexión `stale` no
+  cuenta como sana: si solo quedan mediciones viejas, `state: unknown`, `reason: stale_measurements`.
+- Salud: al primer éxito de una conexión caída, el sondeo de confirmación se hace al intervalo normal (5 s) y no
+  con el retroceso acumulado (hasta 60 s). La histéresis no cambia (2 éxitos). Peor caso de recuperación tras
+  reconectar: ~65 s (antes ~120 s); el típico observado en simulación era 54 s.
+- E4: cada conexión de `/status/connectivity` añade `status`, un veredicto único: `ok`, `degraded`, `down` (enlace
+  caído o sin respuesta confirmada, también con el cable puesto) o `unverified` (sin medir o medición vieja).
+- E4: auditoría nueva:
+  - `inventory.reidentified`: el mismo adaptador, por su MAC, aparece con otro identificador, p. ej. un teléfono
+    cambiado de puerto USB.
+  - `system.resume_detected`: el ciclo de fondo estuvo parado más de `max(30, 3 × refresh_s + 10)` s, normalmente
+    por una suspensión. Entonces se vuelve a detectar y a sondear todo.
+  - Una conexión que desaparece libera sus tareas, que conmutan, y su salud deja de figurar.
+  - Los teléfonos Android por USB se reconocen por RNDIS y también por NCM (`UsbNcm Host Device`).

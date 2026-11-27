@@ -57,6 +57,7 @@ cauce token recover                                  # solo si el almacén qued�
 | `degraded` | `true` | Hay conexión disponible, pero todas con latencia alta o fallos parciales. |
 | `unavailable` | `false` | Hay base para afirmarlo: ninguna conexión disponible (`reason`: `no_active_links` o `all_measured_connections_down`). |
 | `unknown` | `null` | **Aún no hay mediciones suficientes** (`reason: insufficient_measurements`). Pasa tras arrancar el motor o al aparecer una conexión nueva. El consumidor debe seguir con su comportamiento normal. |
+| `unknown` | `null` | **Las mediciones son viejas** (`reason: stale_measurements`, desde 0.2.0): el último sondeo de cada enlace activo supera `2 × max_interval_s + timeout × destinos + 5 s` (unos 131 s por defecto). Significa que el motor responde pero ya no está midiendo; no es «sin internet». |
 
 - `measured` es `false` mientras una conexión no tiene ningún sondeo resuelto; entonces `health` es `unknown` y las métricas son `null`.
 - **No incluye**: MAC, IP pública, IPs locales, gateway, nombres de adaptador, grupo de salida, rutas (leases), tareas ni
@@ -163,7 +164,7 @@ Efecto operativo: ante un fallo de disco, los consumidores reciben `503` y deben
 ## 9. Probar un consumidor en simulación
 
 ```
-python -m cauce sim --port 8765            # terminal 1 (datos ficticios; no es hardware)
+python -m cauce sim --port 8780            # terminal 1 (datos ficticios; no es hardware)
 python -m cauce token create --name prueba --out prueba.token   # terminal 2
 python - <<'PY'
 from cauce.client import CauceReadClient
@@ -171,7 +172,7 @@ c = CauceReadClient.from_token_file("prueba.token")
 v = c.connectivity(); print(v["state"], v["usable"])
 print(c.events(since=v["last_seq"]))
 PY
-curl -s -H "Authorization: Bearer <admin>" -X POST http://127.0.0.1:8765/api/v1/sim/connections/sim-a/state -d '{"state":"down"}'   # solo simulación
+curl -s -H "Authorization: Bearer <admin>" -X POST http://127.0.0.1:8780/api/v1/sim/connections/sim-a/state -d '{"state":"down"}'   # solo simulación
 python -m cauce token revoke <id>          # el consumidor recibe 401 token_revoked
 ```
 

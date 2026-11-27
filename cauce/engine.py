@@ -18,6 +18,11 @@ from .policy import RotationController
 from .routing import RouteError, RouteManager
 
 
+def _mac_key(mac: Optional[str]) -> Optional[str]:
+    m = "".join(ch for ch in str(mac or "").lower() if ch in "0123456789abcdef")
+    return m if len(m) == 12 and m.strip("0") and m != "f" * 12 else None
+
+
 class EngineError(Exception):
     def __init__(self, code: str, message: str, status: int = 400):
         super().__init__(message)
@@ -45,7 +50,10 @@ class Engine:
             recover_threshold=hc["recover_threshold"], degraded_latency_ms=hc["degraded_latency_ms"],
         ), self.connections)
         self.routes = RouteManager(self.audit, self.connections, self.health.state_of)
-        self.rotation = RotationController(self.routes, self.audit)
+        self.rotation_enabled = mode != "real" or bool(cfg["lab"].get("rotation_enabled", False))
+        self.rotation = RotationController(self.routes, self.audit, enabled=self.rotation_enabled)
+        from .routers import build_observers
+        self.routers = build_observers(cfg.get("routers") or [], self.audit)
         self.executor = TaskExecutor(network, self.routes, self.health, self.rotation, self.audit, self.connection)
         self.health.on_change(self._on_health_change)
         self._stop = threading.Event()
@@ -77,16 +85,35 @@ class Engine:
         with self._conn_lock:
             old = self._conns
             self._conns = {c.id: c for c in kept}
+        # Mismo adaptador con otro identificador (Windows le da otro ifIndex al cambiarlo de puerto USB, por
+        # ejemplo): se reconoce por la MAC y se anota como cambio de identificador, no como alta y baja.
+        removed = {cid: c for cid, c in old.items() if cid not in self._conns}
+        renamed: dict[str, str] = {}
+        by_mac = {_mac_key(c.mac): cid for cid, c in removed.items() if _mac_key(c.mac)}
         for c in kept:
-            prev = old.get(c.id)
+            if c.id not in old and _mac_key(c.mac) in by_mac:
+                prev_id = by_mac.pop(_mac_key(c.mac))
+                renamed[c.id] = prev_id
+                self.audit.record("inventory.reidentified", f"{c.name}: identificador {prev_id} -> {c.id} (misma MAC)",
+                                  connection_id=c.id, previous_id=prev_id)
+        for cid, c in removed.items():
+            if cid in renamed.values():
+                self.health.forget(cid)
+                continue
+            self.audit.record("inventory.removed", f"Conexión desaparecida: {c.name}", connection_id=cid)
+            self.health.forget(cid)
+            # Un adaptador que desaparece (teléfono desenchufado) no pasa por DOWN: se libera igual
+            for lease in self.routes.leases():
+                if lease.connection_id == cid:
+                    self.routes.failover(lease, f"la conexión {c.name} desapareció del sistema")
+        for c in kept:
+            prev = old.get(c.id) or old.get(renamed.get(c.id, ""))
             if prev is None:
                 self.audit.record("inventory.added", f"Conexión detectada: {c.name} ({c.kind.value}, {c.link.value})",
                                   connection_id=c.id, ip=c.primary_ip, gateway=c.gateway, independence=c.independence.value)
             elif (prev.link, prev.ipv4, prev.gateway) != (c.link, c.ipv4, c.gateway):
                 self.audit.record("inventory.changed", f"Cambio en {c.name}: enlace {prev.link.value}->{c.link.value}, IP {prev.primary_ip}->{c.primary_ip}",
                                   connection_id=c.id)
-        for cid in set(old) - set(self._conns):
-            self.audit.record("inventory.removed", f"Conexión desaparecida: {old[cid].name}", connection_id=cid)
         return kept
 
     def _apply_egress_check(self, conns: list[Connection]) -> None:
@@ -216,18 +243,45 @@ class Engine:
             "tasks_running": sum(1 for t in tasks if t.state not in TERMINAL_TASK_STATES),
             "tasks_total": len(tasks),
             "audit_last_seq": self.audit.last_seq,
+            "rotation_enabled": self.rotation_enabled,
+            "routers": len(self.routers),
             "global_routes_modified": False,  # el motor nunca modifica la tabla de rutas
             "note": "Simulación: no prueba hardware real" if self.mode == "simulated" else None,
         }
 
     # --- ciclo de vida --------------------------------------------------
+    def resume_gap_s(self) -> float:
+        """Un ciclo de fondo que tarda más que esto indica que el equipo estuvo suspendido (o congelado)."""
+        return max(30.0, 3 * float(self.cfg["discovery"]["refresh_s"]) + 10.0)
+
+    def check_resume(self, now: float, last_tick: float) -> bool:
+        """Tras suspender y reanudar Windows las mediciones anteriores ya no valen: se anota, se vuelve a
+        detectar y se sondea todo de inmediato. Hasta entonces la vista las marca como «sin verificar»."""
+        gap = now - last_tick
+        if last_tick <= 0 or gap < self.resume_gap_s():
+            return False
+        self.audit.record("system.resume_detected", f"Pausa de {gap:.0f} s (¿suspensión?): se vuelve a medir todo",
+                          gap_s=round(gap, 1))
+        self.refresh()
+        self.health.check_all(force=True)
+        return True
+
     def _background(self) -> None:
         last_refresh = 0.0
+        last_tick = 0.0
         while not self._stop.is_set():
             now = time.time()
+            if self.check_resume(now, last_tick):
+                last_refresh = now
+            last_tick = now
             if now - last_refresh >= self.cfg["discovery"]["refresh_s"]:
                 self.refresh()
                 last_refresh = now
+            for rw in self.routers:
+                try:
+                    rw.poll()
+                except Exception as e:  # noqa: BLE001
+                    self.audit.record("error", f"Fallo en observación de router: {e!r}")
             try:
                 self.rotation.tick()
             except Exception as e:
@@ -238,6 +292,8 @@ class Engine:
         self.audit.record("engine.start", f"Motor iniciado (modo {self.mode})", version=__version__)
         self.refresh()
         self.health.check_all(force=True)
+        for rw in self.routers:
+            rw.poll(force=True)
         self.health.start()
         th = threading.Thread(target=self._background, name="cauce-engine", daemon=True)
         th.start()

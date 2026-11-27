@@ -10,6 +10,11 @@ en Windows 11, con una **API versionada solo en 127.0.0.1** para que otras aplic
 - La rotación es solo para laboratorio propio, con límites duros; **nunca** se usa para sortear límites,
   bloqueos ni restricciones de terceros: una respuesta 429/403 detiene la operación.
 
+> **0.2.0.dev0 (rama `claude/consolidacion-integracion`)**: API en el puerto **8780** (8765 queda para Cauce Forms,
+> ver [docs/PUERTOS.md](docs/PUERTOS.md)); rotación **apagada** con el motor real; observación de routers MikroTik/OpenWrt
+> **solo simulada** ([docs/ROUTERS.md](docs/ROUTERS.md)); paquete de validación física con dos enlaces
+> ([docs/VALIDACION_FISICA_WINDOWS.md](docs/VALIDACION_FISICA_WINDOWS.md)), todavía **sin ejecutar** en hardware real.
+>
 > **v0.1.0 — Candidato estable de laboratorio.** Instalación y detección verificadas en Windows 11
 > físico (PC MSI, según informó su propietario: [evidencia](docs/evidencia/prueba-fisica-msi.md)) y en la CI
 > de GitHub (Linux y Windows, Python 3.10/3.12/3.13). La **conmutación real entre dos proveedores está
@@ -22,6 +27,8 @@ en Windows 11, con una **API versionada solo en 127.0.0.1** para que otras aplic
 python -m cauce scenario            # escenario de 10 pasos con el simulador, genera informe
 python -m cauce sim --open          # simulador + panel en el navegador
 python -m cauce doctor              # diagnóstico del equipo
+python -m cauce fieldcheck --simulate --lab-url http://lab.sim:8770   # guion de validación física (simulado)
+python -m cauce routers             # routers observados (solo transporte simulado)
 python -m cauce discover            # interfaces reales detectadas
 python -m cauce run --open          # motor real + panel
 cd tests && python -m unittest -v   # pruebas
@@ -47,7 +54,9 @@ cauce/
   client.py    cliente Python para integración externa
   simulator.py simulador de conexiones
   scenario.py  escenario reproducible de 10 pasos
-  labserver.py servidor de laboratorio propio (eco de IP, 429 de prueba)
+  labserver.py servidor de laboratorio propio (eco de IP, 429 de prueba, página de sesión)
+  routers/     observación de routers (contrato + MikroTik/OpenWrt simulados, solo lectura)
+  fieldcheck.py validación física guiada con dos enlaces reales
   doctor.py    diagnóstico de dependencias y permisos
   secrets_store.py  DPAPI (Windows)
 ```

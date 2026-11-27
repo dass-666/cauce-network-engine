@@ -1,0 +1,53 @@
+{
+  "_nota": "Respuestas SIMULADAS con el formato de la REST API de RouterOS v7 (valores como texto). No son capturas de un equipo real. IP de documentación (RFC 5737).",
+  "scenarios": {
+    "normal": {
+      "interface": [
+        {".id": "*1", "name": "ether1", "type": "ether", "running": "true", "disabled": "false"},
+        {".id": "*2", "name": "lte1", "type": "lte", "running": "true", "disabled": "false"}
+      ],
+      "ip/route": [
+        {".id": "*A", "dst-address": "0.0.0.0/0", "gateway": "192.0.2.1", "immediate-gw": "192.0.2.1%ether1", "distance": "1", "active": "true", "comment": "WAN1"},
+        {".id": "*B", "dst-address": "0.0.0.0/0", "gateway": "198.51.100.1", "immediate-gw": "198.51.100.1%lte1", "distance": "2", "active": "false", "comment": "WAN2"},
+        {".id": "*C", "dst-address": "10.0.0.0/24", "gateway": "bridge", "active": "true"}
+      ],
+      "tool/netwatch": [
+        {".id": "*10", "host": "203.0.113.10", "type": "icmp", "status": "up", "rtt-avg": "18.4ms", "loss-percent": "0%", "comment": "WAN1"},
+        {".id": "*11", "host": "203.0.113.10", "type": "icmp", "status": "up", "rtt-avg": "64.0ms", "loss-percent": "0%", "comment": "WAN2"}
+      ]
+    },
+    "wan1_down": {
+      "interface": [
+        {".id": "*1", "name": "ether1", "type": "ether", "running": "true", "disabled": "false"},
+        {".id": "*2", "name": "lte1", "type": "lte", "running": "true", "disabled": "false"}
+      ],
+      "ip/route": [
+        {".id": "*A", "dst-address": "0.0.0.0/0", "gateway": "192.0.2.1", "immediate-gw": "192.0.2.1%ether1", "distance": "1", "active": "false", "comment": "WAN1"},
+        {".id": "*B", "dst-address": "0.0.0.0/0", "gateway": "198.51.100.1", "immediate-gw": "198.51.100.1%lte1", "distance": "2", "active": "true", "comment": "WAN2"}
+      ],
+      "tool/netwatch": [
+        {".id": "*10", "host": "203.0.113.10", "type": "icmp", "status": "down", "rtt-avg": "", "loss-percent": "100%", "comment": "WAN1"},
+        {".id": "*11", "host": "203.0.113.10", "type": "icmp", "status": "up", "rtt-avg": "71.2ms", "loss-percent": "0%", "comment": "WAN2"}
+      ]
+    },
+    "both_down": {
+      "interface": [
+        {".id": "*1", "name": "ether1", "type": "ether", "running": "false", "disabled": "false"},
+        {".id": "*2", "name": "lte1", "type": "lte", "running": "true", "disabled": "false"}
+      ],
+      "ip/route": [
+        {".id": "*A", "dst-address": "0.0.0.0/0", "gateway": "192.0.2.1", "immediate-gw": "192.0.2.1%ether1", "active": "false", "comment": "WAN1"},
+        {".id": "*B", "dst-address": "0.0.0.0/0", "gateway": "198.51.100.1", "immediate-gw": "198.51.100.1%lte1", "active": "false", "comment": "WAN2"}
+      ],
+      "tool/netwatch": [
+        {".id": "*10", "host": "203.0.113.10", "status": "down", "comment": "WAN1"},
+        {".id": "*11", "host": "203.0.113.10", "status": "down", "comment": "WAN2"}
+      ]
+    },
+    "garbage": {
+      "interface": {"error": 500},
+      "ip/route": [],
+      "tool/netwatch": []
+    }
+  }
+}

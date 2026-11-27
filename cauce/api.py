@@ -26,11 +26,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlsplit
 
-from . import API_VERSION, __version__
+from . import API_VERSION, DEFAULT_API_PORT, __version__
 from .engine import Engine, EngineError
-from .policy import PolicyError
+from .policy import PolicyError, RotationDisabled
 from .routing import RouteError
-from .status import MAX_EVENTS, connectivity_view, events_view
+from .status import MAX_EVENTS, connectivity_view, events_view, routers_view
 from .tokens import SCOPE_ADMIN, SCOPE_READ, AccessLog, Principal, TokenError, TokenStore
 
 _RANK = {SCOPE_READ: 1, SCOPE_ADMIN: 2}
@@ -49,7 +49,7 @@ Route = tuple[str, re.Pattern, Callable, str]   # método, patrón, función, pe
 
 
 class CauceAPI:
-    def __init__(self, engine: Engine, host: str = "127.0.0.1", port: int = 8765, token: Optional[str] = None):
+    def __init__(self, engine: Engine, host: str = "127.0.0.1", port: int = DEFAULT_API_PORT, token: Optional[str] = None):
         if host != "127.0.0.1":
             raise ValueError("La API solo puede escuchar en 127.0.0.1")
         self.engine = engine
@@ -105,6 +105,11 @@ class CauceAPI:
         def status_connectivity(req, m, q, body):
             self._only_params(q, ())
             return connectivity_view(e, time.time())
+
+        @r("GET", P + "/status/routers", SCOPE_READ)
+        def status_routers(req, m, q, body):
+            self._only_params(q, ())
+            return routers_view(e, time.time())
 
         @r("GET", P + "/status/events", SCOPE_READ)
         def status_events(req, m, q, body):
@@ -398,6 +403,8 @@ class CauceAPI:
         except RouteError as e:
             status = {"not_owner": 403, "unknown_lease": 404, "unknown_connection": 404}.get(e.code, 409)
             self._error(h, status, e.code, e.message)
+        except RotationDisabled as e:
+            self._error(h, 403, "rotation_disabled", str(e))
         except PolicyError as e:
             self._error(h, 409, "policy_error", str(e))
         except (ValueError, TypeError) as e:

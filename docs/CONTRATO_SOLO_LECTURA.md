@@ -23,7 +23,7 @@
 | `executor.py` / `policy.py` | Tareas de laboratorio y rotación con límites duros |
 | `engine.py` | Orquesta lo anterior. Refresca el inventario cada 30 s (`discovery.refresh_s`) |
 | `audit.py` | Eventos encadenados con SHA‑256 en `audit.jsonl`. En memoria guarda los últimos 2000 |
-| `api.py` | HTTP en `127.0.0.1:8765`, `/api/v1` |
+| `api.py` | HTTP en `127.0.0.1:8780`, `/api/v1` |
 | `client.py` | Cliente Python de referencia (solo biblioteca estándar) |
 
 ### A2. Endpoints (EXISTEN)
