@@ -33,6 +33,7 @@ class SimLink:
     state: str = "up"           # up | down | disconnected
     latency_ms: float = 20.0
     drop_responses: bool = False  # simula respuestas perdidas tras enviar
+    mac: Optional[str] = None
 
 
 @dataclass
@@ -67,16 +68,26 @@ class SimulatedNetwork:
         assert state in ("up", "down", "disconnected")
         self.links[conn_id].state = state
 
+    def plug(self, link: "SimLink") -> None:
+        """Conexión en caliente (p. ej. un teléfono por USB). ``state='down'``: enlace activo sin internet."""
+        with self._lock:
+            self.links[link.id] = link
+
+    def unplug(self, conn_id: str) -> None:
+        """Desconexión en caliente: el adaptador desaparece de Windows."""
+        with self._lock:
+            self.links.pop(conn_id, None)
+
     # --- proveedor de descubrimiento ----------------------------------
     name = "simulated"
 
     def discover(self) -> list[Connection]:
         out = []
-        for l in self.links.values():
+        for l in list(self.links.values()):
             link = LinkState.DOWN if l.state == "disconnected" else LinkState.UP
             out.append(Connection(
                 id=l.id, name=l.name, description=f"Conexión simulada ({l.kind.value})", kind=l.kind,
-                link=link, ipv4=[l.local_ip] if link == LinkState.UP else [],
+                link=link, mac=l.mac, ipv4=[l.local_ip] if link == LinkState.UP else [],
                 gateway=l.gateway if link == LinkState.UP else None, route_metric=l.metric,
                 public_ip=l.public_ip if link == LinkState.UP else None, source="simulated",
             ))
