@@ -195,8 +195,16 @@ class RobustezLanzadorTest(unittest.TestCase):
     def test_previo_sin_problemas(self):
         with tempfile.TemporaryDirectory() as d:
             r = lab.Lab(Path(d) / "l").previo()
-            self.assertTrue(r["ok"], r)
             self.assertTrue(r["reinstalar"])
+            py = next(x for x in r["detalle"] if x["nombre"] == "python")
+            # El laboratorio exige 3.11+ porque Monitor solo se prueba en 3.11–3.13. En la CI con 3.10 ese punto
+            # debe bloquear (es lo correcto) y el resto debe estar bien.
+            if sys.version_info >= (3, 11):
+                self.assertTrue(r["ok"], r)
+            else:
+                self.assertFalse(r["ok"])
+                self.assertTrue(py["bloqueante"] and not py["ok"])
+                self.assertTrue(all(x["ok"] for x in r["detalle"] if x["nombre"] != "python"), r)
 
     def test_cancelacion_deja_informe_parcial_y_nada_aprobado(self):
         with tempfile.TemporaryDirectory() as d:
