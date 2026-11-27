@@ -153,7 +153,7 @@ class SecretosTest(Base):
                     textos.append((f, fh.read().decode("utf-8", "replace")))
         for f, t in textos:
             for sec in secretos:
-                self.assertNotIn(sec.split("_")[-1], t, f"secreto en {os.path.basename(f)}")
+                self.assertNotIn(sec.split(".")[-1], t, f"secreto en {os.path.basename(f)}")
         self.assertTrue(sid)
 
 
