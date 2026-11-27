@@ -57,6 +57,7 @@ cauce token recover                                  # solo si el almacén qued�
 | `degraded` | `true` | Hay conexión disponible, pero todas con latencia alta o fallos parciales. |
 | `unavailable` | `false` | Hay base para afirmarlo: ninguna conexión disponible (`reason`: `no_active_links` o `all_measured_connections_down`). |
 | `unknown` | `null` | **Aún no hay mediciones suficientes** (`reason: insufficient_measurements`). Pasa tras arrancar el motor o al aparecer una conexión nueva. El consumidor debe seguir con su comportamiento normal. |
+| `unknown` | `null` | **Las mediciones son viejas** (`reason: stale_measurements`, desde 0.2.0): el último sondeo de cada enlace activo supera `2 × max_interval_s + timeout × destinos + 5 s` (unos 131 s por defecto). Significa que el motor responde pero ya no está midiendo; no es «sin internet». |
 
 - `measured` es `false` mientras una conexión no tiene ningún sondeo resuelto; entonces `health` es `unknown` y las métricas son `null`.
 - **No incluye**: MAC, IP pública, IPs locales, gateway, nombres de adaptador, grupo de salida, rutas (leases), tareas ni

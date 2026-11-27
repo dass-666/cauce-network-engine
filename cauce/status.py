@@ -47,17 +47,24 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
       usable      al menos una conexión disponible y sana
       degraded    hay conexión disponible, pero todas con latencia alta o fallos parciales
       unavailable hay mediciones y ninguna conexión está disponible
-      unknown     todavía no hay mediciones suficientes (ver ``reason``); ``usable`` es null
+      unknown     todavía no hay mediciones suficientes, o las que hay son viejas (``reason``:
+                  ``insufficient_measurements`` / ``stale_measurements``); ``usable`` es null
     ``usable`` es true/false solo cuando el motor tiene base para decirlo; si no, null.
     Este documento solo existe si el motor responde: si no responde, el consumidor
     debe concluir "sin información", NUNCA "sin internet" (ver docs/LECTURA_PROTEGIDA.md).
     """
     snap = engine.health.snapshot()
+    stale_after = engine.health.stale_after_s()
     conns = []
     for c in sorted(engine.connections(), key=lambda c: c.id):
         h = snap.get(c.id, {})
         state = h.get("state", Health.UNKNOWN.value)
         measured = bool(h.get("probes", 0)) and state != Health.UNKNOWN.value
+        last = h.get("last_probe")
+        age = round(max(0.0, now - last), 1) if isinstance(last, (int, float)) else None
+        # 0.2.0: un resultado viejo no vale como estado actual (hilo de salud atascado, reloj, etc.)
+        stale = measured and (age is None or age > stale_after)
+        nxt = h.get("next_due")
         conns.append({
             "id": c.id,
             "kind": c.kind.value,
@@ -67,11 +74,19 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
             "health": state,
             "availability_pct": h.get("availability_pct"),
             "avg_latency_ms": h.get("avg_latency_ms"),
+            # 0.2.0 (diagnóstico, sin datos sensibles): antigüedad del último sondeo, si ya no vale,
+            # si una conexión caída está confirmando su recuperación y cuándo toca el siguiente sondeo
+            "last_probe_age_s": age,
+            "stale": stale,
+            "recovering": state == Health.DOWN.value and h.get("consecutive_ok", 0) > 0,
+            "next_probe_in_s": round(max(0.0, nxt - now), 1) if isinstance(nxt, (int, float)) and nxt else None,
         })
     candidates = [x for x in conns if x["link"] == "up"]
-    healthy = [x for x in conns if x["available"] and x["health"] == Health.HEALTHY.value]
-    degraded = [x for x in conns if x["available"] and x["health"] == Health.DEGRADED.value]
+    fresh = [x for x in conns if not x["stale"]]
+    healthy = [x for x in fresh if x["available"] and x["health"] == Health.HEALTHY.value]
+    degraded = [x for x in fresh if x["available"] and x["health"] == Health.DEGRADED.value]
     pending = [x for x in candidates if not x["measured"]]
+    stale_up = [x for x in candidates if x["stale"]]
     reason = None
     if healthy:
         state, usable = "usable", True
@@ -79,6 +94,8 @@ def connectivity_view(engine: Engine, now: float) -> dict[str, Any]:
         state, usable = "degraded", True
     elif pending:
         state, usable, reason = "unknown", None, "insufficient_measurements"
+    elif stale_up:
+        state, usable, reason = "unknown", None, "stale_measurements"
     else:
         state, usable = "unavailable", False
         reason = "no_active_links" if not candidates else "all_measured_connections_down"

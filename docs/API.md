@@ -135,3 +135,10 @@ Cada evento: `{"seq", "ts", "kind", "message", "data", "prev", "hash"}`. Tipos p
   El simulador la conserva para el escenario.
 - `GET /status/routers` (`read`): observación de routers, solo simulada en esta versión.
 - `GET /diagnostics` añade `rotation_enabled` y `routers`.
+- `GET /status/connectivity`: cada conexión añade `last_probe_age_s` (segundos desde su último sondeo), `stale`
+  (el resultado ya no vale: el último sondeo es más viejo que `2 × max_interval_s + timeout × destinos + 5 s`),
+  `recovering` (estaba caída y ya respondió bien, falta confirmar) y `next_probe_in_s`. Una conexión `stale` no
+  cuenta como sana: si solo quedan mediciones viejas, `state: unknown`, `reason: stale_measurements`.
+- Salud: al primer éxito de una conexión caída, el sondeo de confirmación se hace al intervalo normal (5 s) y no
+  con el retroceso acumulado (hasta 60 s). La histéresis no cambia (2 éxitos). Peor caso de recuperación tras
+  reconectar: ~65 s (antes ~120 s); el típico observado en simulación era 54 s.

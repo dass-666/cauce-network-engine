@@ -192,8 +192,12 @@ class ReducedViewTest(Base):
         self.assertEqual(set(v), {"schema", "api", "engine", "generated_at", "last_seq", "state", "usable",
                                   "reason", "counts", "connections"})
         for c in v["connections"]:
+            # 0.2.0: + frescura de la medición (números y booleanos, sin IP, MAC ni errores en texto)
             self.assertEqual(set(c), {"id", "kind", "link", "available", "measured", "health",
-                                      "availability_pct", "avg_latency_ms"})
+                                      "availability_pct", "avg_latency_ms",
+                                      "last_probe_age_s", "stale", "recovering", "next_probe_in_s"})
+            self.assertIsInstance(c["stale"], bool)
+            self.assertIsInstance(c["recovering"], bool)
         for ev in self.read.events(0)["events"]:
             self.assertLessEqual(set(ev), {"seq", "ts", "kind", "connection_id", "old", "new"})
 
