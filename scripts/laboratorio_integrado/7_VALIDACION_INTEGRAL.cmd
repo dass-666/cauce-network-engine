@@ -35,8 +35,10 @@ if "%PERFIL%"=="" (
   if "%OPC%"=="4" set "PERFIL=nocturno"
   if not defined PERFIL set "PERFIL=completo"
 )
-if not exist "%USERPROFILE%\cauce-lab-integrado\estado.json" (
-  echo Primera vez: se instala el laboratorio ^(10-20 min, necesita internet^).
+%PY% lab.py al-dia
+if errorlevel 3 (
+  echo Se instala o actualiza el laboratorio ^(10-20 min la primera vez, necesita internet^).
+  %PY% lab.py detener >nul 2>nul
   %PY% lab.py instalar --navegador-forms
   if errorlevel 1 (
     echo La instalacion fallo. Revisa la salida de arriba.
