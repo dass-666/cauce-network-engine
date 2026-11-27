@@ -48,7 +48,12 @@ Los latidos deben ir separados al menos 0,5 s. Por debajo, el motor responde 429
    vuelve con `requires_human` (`engine_restart_during_operation`).
 4. **Si Forms también perdió el id**, un nuevo `POST /sessions` con la misma credencial sustituye la sesión restaurada y
    **hereda** la marca.
-5. **Network Engine solo observa.** Si no responde, Forms funciona igual. La acción de la persona nunca espera al motor.
+5. **Si la acción falla a medias** (excepción, cierre del navegador, tiempo agotado tras pulsar Enviar), Forms envía un
+   latido `status: "error"` con `operation: "in_progress"` y **no** reintenta: el motor marca `requires_human`
+   (`operation_interrupted`) y Forms muestra «revisar a mano» aunque el motor no responda (E6).
+6. **«En curso» se envía siempre antes de actuar.** Si hubo un latido hace menos de 0,5 s, Forms espera ese resto; si no,
+   el motor respondería 429 y la operación quedaría sin marcar (defecto demostrado en E6 en el consumidor de referencia).
+7. **Network Engine solo observa.** Si no responde, Forms funciona igual. La acción de la persona nunca espera al motor.
 
 ## Qué demuestran las pruebas de contrato
 `tests/test_contrato_forms.py` usa API real, red simulada y reinicio real del motor sobre la misma carpeta y el mismo
@@ -61,6 +66,10 @@ puerto. Comprueba:
 - 401 detiene los latidos;
 - 429 no se insiste;
 - la marca no se olvida si el motor cae.
+
+`tests/test_contrato_forms_no_repeticion.py` (E6) añade: la acción se ejecuta una sola vez ante cualquier respuesta
+del motor; una acción que falla a medias queda para revisar (motor y pantalla); «en curso» llega aunque haya un latido
+justo antes; una credencial `session` no puede resolver la marca (403).
 
 ## Qué falta, y es decisión del autor de Forms
 - Llamar a esto desde Forms, en su repositorio y con su revisión.

@@ -10,7 +10,8 @@ Reglas del contrato que este código hace cumplir:
 2. Network Engine es OBSERVADOR: si no responde, el estado es «sin información» (nunca «sin internet») y la acción
    de la persona NO se bloquea ni se retrasa.
 3. Ninguna acción se repite sola. ``operacion()`` envuelve una acción que la persona inició y la ejecuta UNA vez;
-   si algo falla a medias, el resultado es «revisar a mano», no un reintento.
+   si algo falla a medias, el resultado es «revisar a mano» (en el motor y en la interfaz), no un reintento, y la
+   excepción llega a Forms sin tragarse. «En curso» se envía aunque haya habido un latido justo antes (E6).
 4. ``requires_human`` solo lo quita una persona con credencial admin (``resolve``). El consumidor no tiene forma de
    quitarlo y no lo intenta.
 5. Tras un reinicio del motor: si conserva la sesión, se sigue latiendo con el mismo id; si respondió 404, se registra
@@ -56,6 +57,7 @@ class SesionDiagnostico:
         self._espera_hasta = 0.0
         self.ultimo = EstadoVisible(SIN_INFORMACION)
         self.marcas_no_enviadas = 0           # veces que no se pudo avisar de una operación (para mostrarlo)
+        self._ultimo_envio = float("-inf")
 
     # ------------------------------------------------------------------ ciclo de vida
     def iniciar(self) -> EstadoVisible:
@@ -64,6 +66,7 @@ class SesionDiagnostico:
         return self._registrar()
 
     def _registrar(self) -> EstadoVisible:
+        self._ultimo_envio = self.reloj()
         try:
             v = self.c.register(self.etiqueta, connection_id=self.conexion, heartbeat_timeout_s=self.latido_max_s)
         except CauceAPIError as e:
@@ -79,6 +82,7 @@ class SesionDiagnostico:
             return self.ultimo
         if not self.c.session_id:
             return self._registrar()
+        self._ultimo_envio = self.reloj()
         try:
             v = self.c.heartbeat(ok, error_code, operation)
         except CauceAPIError as e:
@@ -103,17 +107,36 @@ class SesionDiagnostico:
         Avisa «en curso» antes y «idle» después. Si el motor no responde, la acción sigue igual (el motor solo
         observa) y se cuenta en ``marcas_no_enviadas`` para que la interfaz lo diga.
         """
+        # E6: un latido <0,5 s antes hacía que «en curso» recibiera 429 y no llegara al motor. Se respeta el intervalo
+        # mínimo y se espera cualquier pausa por 429 (repetir un LATIDO es inocuo; la acción nunca se repite).
+        self._esperar_turno()
         antes = self.latir(operation="in_progress")
-        if antes.estado == SIN_INFORMACION:
+        if antes.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
             self.marcas_no_enviadas += 1
         try:
             yield self
-        finally:
-            # se espera lo mínimo para no chocar con el límite de frecuencia del motor
-            time.sleep(0.55)
-            despues = self.latir(operation="idle")
-            if despues.estado == SIN_INFORMACION:
+        except BaseException:
+            # E6: la acción falló a medias: su resultado es desconocido. Se avisa «error» con la operación todavía en
+            # curso (el motor lo marca requires_human) y la interfaz dice «revisar a mano» aunque el motor no responda.
+            # La excepción sigue su camino: Forms la ve y nada se reintenta.
+            self._esperar_turno()
+            e = self.latir(ok=False, error_code="other", operation="in_progress")
+            if e.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE, CREDENCIAL_INVALIDA):
                 self.marcas_no_enviadas += 1
+            self.ultimo.requiere_persona = True
+            self.ultimo.motivo = self.ultimo.motivo or "accion_fallida_a_medias"
+            raise
+        self._esperar_turno()
+        despues = self.latir(operation="idle")
+        if despues.estado in (SIN_INFORMACION, DEMASIADO_FRECUENTE):
+            self.marcas_no_enviadas += 1
+
+    def _esperar_turno(self) -> None:
+        """Espera lo justo para que el siguiente latido no choque con el límite de frecuencia del motor."""
+        hasta = max(self._espera_hasta, self._ultimo_envio + 0.55)
+        falta = hasta - self.reloj()
+        if 0 < falta <= 3:
+            time.sleep(falta)
 
     # ------------------------------------------------------------------ interpretación
     def _desde_vista(self, v: dict) -> EstadoVisible:
