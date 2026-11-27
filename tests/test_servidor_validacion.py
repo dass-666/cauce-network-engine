@@ -89,12 +89,13 @@ class LimitesTest(unittest.TestCase):
 
 class CliTest(unittest.TestCase):
     def test_cli_rechaza_publica_y_crea_clave_privada(self):
+        env = {**os.environ, "PYTHONIOENCODING": "utf-8"}           # Windows: consola cp1252
         p = subprocess.run([sys.executable, "-m", "cauce", "labserver", "--host", "1.1.1.1", "--port", "0"],
-                           cwd=ROOT, capture_output=True, text=True, timeout=30)
+                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
         self.assertEqual(p.returncode, 2)
         self.assertIn("pública", p.stderr)
         p = subprocess.run([sys.executable, "-m", "cauce", "labserver", "--host", "10.255.255.1", "--port", "0"],
-                           cwd=ROOT, capture_output=True, text=True, timeout=30)
+                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
         self.assertEqual(p.returncode, 2, "red local sin clave: no arranca")
 
 

@@ -285,7 +285,8 @@ class MotorTest(SessionApiBase):
         r2 = SessionRegistry(self.eng.audit, lambda c: "ok", lambda c: True, store=st, clock=self.clock)   # «nuevo motor»
         s = r2.all()[0]
         self.assertEqual((s.id, s.requires_human, s.restored), (self.a.session_id, True, True))
-        self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
+        if os.name != "nt":                # en Windows el modo no aplica: protege la ACL de la carpeta de datos
+            self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
 
 
 if __name__ == "__main__":

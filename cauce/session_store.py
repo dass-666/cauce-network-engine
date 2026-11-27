@@ -5,7 +5,8 @@ token), conexión de la que depende, tiempo de espera de latidos, último estado
 requiere intervención humana y por qué, y el historial de las últimas sesiones cerradas. No se guardan URL, cookies,
 formularios, contenido de páginas ni datos personales: el motor nunca los recibe.
 
-Cómo se escribe: JSON en un temporal, fsync y `os.replace` (un lector nunca ve un archivo a medias). Antes de reemplazar,
+Cómo se escribe: JSON en un temporal, fsync y `os.replace` (un lector nunca ve un archivo a medias). Permisos: 0600 en
+Linux/macOS; en Windows los da la ACL de la carpeta de datos del usuario (%LOCALAPPDATA%), igual que audit.jsonl. Antes de reemplazar,
 la versión buena anterior pasa a `.bak`. El contenido lleva un resumen SHA-256: una escritura cortada o un archivo
 alterado se detecta al cargar. Si el principal está dañado se intenta el `.bak`; si también lo está, el archivo dañado se
 aparta (`.corrupt-<fecha>`) y se empieza vacío, y la auditoría lo anota para que una persona lo revise.
@@ -18,6 +19,7 @@ import hashlib
 import json
 import os
 import secrets
+import threading
 import time
 from typing import Any, Optional
 
@@ -29,14 +31,32 @@ def _digest(body: dict) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _replace(src: str, dst: str, intentos: int = 20) -> None:
+    """os.replace con reintentos: en Windows falla con PermissionError mientras otro proceso tiene abierto el destino
+    (un lector o un escritor simultáneo). Encontrado en la CI de Windows (E5)."""
+    for i in range(intentos):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == intentos - 1:
+                raise
+            time.sleep(0.02 * (i + 1))
+
+
 class SessionStore:
     def __init__(self, path: str):
         self.path = path
         self.bak = path + ".bak"
+        self._lock = threading.Lock()          # dentro de un proceso, una escritura cada vez
 
     # ------------------------------------------------------------------ escritura
     def save(self, sessions: list[dict], closed: list[dict], saved_at: float) -> None:
         """Lanza OSError si no se pudo escribir (el llamador lo anota; el motor sigue funcionando)."""
+        with self._lock:
+            self._save(sessions, closed, saved_at)
+
+    def _save(self, sessions: list[dict], closed: list[dict], saved_at: float) -> None:
         body = {"schema": SCHEMA, "saved_at": saved_at, "sessions": sessions, "closed": closed}
         doc = {**body, "sha256": _digest(body)}
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
@@ -49,10 +69,10 @@ class SessionStore:
                 os.fsync(fh.fileno())
             if os.path.exists(self.path) and self._read(self.path) is not None:
                 try:
-                    os.replace(self.path, self.bak)      # la versión buena anterior queda de respaldo
+                    _replace(self.path, self.bak)        # la versión buena anterior queda de respaldo
                 except FileNotFoundError:
                     pass                                 # otro escritor la movió entre medias: su respaldo vale igual
-            os.replace(tmp, self.path)
+            _replace(tmp, self.path)
         finally:
             if os.path.exists(tmp):
                 try:
