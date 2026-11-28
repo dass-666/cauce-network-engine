@@ -1,10 +1,26 @@
 {
-  "_nota": "Combinación E10 (laboratorio, sin fusionar, sin prueba física): Network Engine = la carpeta desde la que se ejecuta (rama claude/e10-forms-nativo); Monitor y Forms en estos commits exactos. versiones.json del laboratorio sigue fijando RC3 y no se toca.",
-  "network_engine": {"version": "0.2.0.dev0", "rama": "claude/e10-forms-nativo"},
-  "monitor": {"repo": "dass-666/cauce-monitor-engine", "commit": "7b92446e884239b52c1253d57ee97d244fe4067b",
-              "rama": "claude/project-thread-so1hjy", "version": "2.2.2-dev"},
-  "forms": {"repo": "dass-666/CAUCE-UNIVERSAL-CONEXION", "commit": "e55a45d99b34b10d6f477cda9dfe0a851dfc8b63",
-            "rama": "claude/integracion-nativa-rc3", "version": "0.2.0rc1"},
-  "puertos": {"monitor": 8100, "forms": 8865, "network_engine": 8880, "servidor_laboratorio": 8870},
+  "_nota": "Combinación E10 (laboratorio, sin fusionar, sin prueba física): Network Engine = la carpeta desde la que se ejecuta (rama claude/e10-forms-nativo); Monitor y Forms en estos commits exactos. versiones.json del laboratorio sigue fijando RC3 y no se toca. Monitor 14bfaac = 7b92446 (RC3) + S5 (centro de revisiones: red frente a Forms).",
+  "network_engine": {
+    "version": "0.2.0.dev0",
+    "rama": "claude/e10-forms-nativo"
+  },
+  "monitor": {
+    "repo": "dass-666/cauce-monitor-engine",
+    "commit": "14bfaacdfc8126a9c77066c08ef02a11a4e4aa2d",
+    "rama": "claude/project-thread-nd92gq",
+    "version": "2.2.2-dev"
+  },
+  "forms": {
+    "repo": "dass-666/CAUCE-UNIVERSAL-CONEXION",
+    "commit": "e55a45d99b34b10d6f477cda9dfe0a851dfc8b63",
+    "rama": "claude/integracion-nativa-rc3",
+    "version": "0.2.0rc1"
+  },
+  "puertos": {
+    "monitor": 8100,
+    "forms": 8865,
+    "network_engine": 8880,
+    "servidor_laboratorio": 8870
+  },
   "_puertos": "Base del laboratorio; el lanzador E10 los desplaza +200 (Monitor 8300, Forms 9065, Network Engine 9080, servidor 9070) para no chocar con RC2 (+0) ni RC3 (+100)."
 }
