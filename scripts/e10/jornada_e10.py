@@ -1,4 +1,4 @@
-"""E10 · Jornadas SIMULADAS integrales: Network Engine E10 + Monitor E10 + Forms NATIVO (e55a45d) + portal propio.
+"""E10 · Jornadas SIMULADAS integrales: Network Engine E10 + Monitor E10 + Forms NATIVO (0.2.0rc2, 933fe89) + portal propio.
 
 Todo en 127.0.0.1, red SIMULADA del motor, datos FICTICIOS, portal de laboratorio PROPIO. La «persona» que escribe
 ENVIAR es este guion (confirmación SIMULADA). Nada de esto es una prueba física.
@@ -143,6 +143,14 @@ def plan(n: int) -> dict[int, str]:
     tipos = ["cortar_despues", "acuse_perdido", "cortar_antes", "portal_lento", "ne_apagado", "ne_reiniciado",
              "red_caida", "doble_clic", "forms_reiniciado", "monitor_reiniciado", "reinicio_simultaneo",
              "credencial_revocada", "capacidad", "navegador_cerrado", "frase_incorrecta"]
+    # E10b: el escenario A1 va SIEMPRE en el expediente 0 de cada jornada de regresión (petición de Diego).
+    return {0: A1, **_plan(n, tipos)}
+
+
+A1 = "a1_resolver_red"
+
+
+def _plan(n: int, tipos: list[str]) -> dict[int, str]:
     if n <= 6:
         return {1: "acuse_perdido", 2: "cortar_antes", 3: "reinicio_simultaneo", 4: "credencial_revocada",
                 5: "frase_incorrecta"}
@@ -184,6 +192,9 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
         st, r, extra = 0, None, {}
         if fallo in ("cortar_despues", "cortar_antes"):
             lab.portal_api("POST", "/_lab/fallo", {"tipo": fallo, "veces": 6})
+        if fallo == A1:                                # el portal SÍ registra, el acuse no llega a tiempo: incierta
+            lab.portal_api("POST", "/_lab/fallo", {"tipo": "cortar_despues", "veces": 6})
+            lab.portal_api("POST", "/_lab/fallo", {"tipo": "acuse_lento", "segundos": 25})
         if fallo == "acuse_perdido":                    # el portal registra, la respuesta se pierde y el acuse tarda
             lab.portal_api("POST", "/_lab/fallo", {"tipo": "cortar_despues", "veces": 6})
             lab.portal_api("POST", "/_lab/fallo", {"tipo": "acuse_lento", "segundos": 20})
@@ -277,6 +288,8 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
             s2, _ = lab.enviar()
             fila["repetir_http"] = s2
             bloqueos += s2 == 409
+        if fallo == A1:
+            fila["a1"] = a1_resolver_red(JL, lab, op, filas[i], i)
         if estado == "rechazada" and fallo == "capacidad":
             fila["recibidos_vs_capacidad"] = lab.portal_api("GET", "/_lab/estadisticas")
             lab.portal_api("POST", "/_lab/limites", {"capacidad": 100000})
@@ -310,7 +323,12 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
         if f is None or any(str(f.get(k)) != str(v) for k, v in c.items() if k in f):
             mezclados.append({"folio": x["folio"], "expediente": c.get("expediente")})
     conservadas = {oid: ops.get(oid, {}).get("estado") for oid in inciertas_vistas}
-    perdidas = {k: v for k, v in conservadas.items() if v not in ("incierta", "confirmada")}
+    # La operación del escenario A1 pasa a «revisada» con resultado «sin_determinar» al resolver la marca de red: es
+    # lo esperado (sigue bloqueando; lo comprueba a1_resolver_red_no_reenvia), no una incierta perdida.
+    a1_ops = {f["op"] for f in res if "a1" in f and f.get("op")}
+    perdidas = {k: v for k, v in conservadas.items() if v not in ("incierta", "confirmada")
+                and not (k in a1_ops and v == "revisada"
+                         and (ops.get(k, {}).get("revision") or {}).get("resultado") == "sin_determinar")}
     d = lab.diag()
     return {"jornada": etiqueta, "expedientes": n, "fallos": fallos, "resultados": res, "verificadas": verificadas,
             "portal": {"recibidos": st1["recibidos"] - st0["recibidos"], "duplicados": st1["duplicados"],
@@ -328,6 +346,8 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
                                                   for f in res if f.get("fallo") == "frase_incorrecta"),
                 "capacidad_respetada": all(f["recibidos_vs_capacidad"]["recibidos"] <= f["recibidos_vs_capacidad"]["capacidad"]
                                            for f in res if "recibidos_vs_capacidad" in f),
+                # A1: resolver la marca de RED en Network Engine no deja reenviar una operación incierta
+                "a1_resolver_red_no_reenvia": all(f["a1"]["ok"] for f in res if "a1" in f) if any("a1" in f for f in res) else None,
                 "monitor_ve_revision_de_cada_incierta": all(monitor_vio) if monitor_vio else None,
                 "credencial_revocada_se_ve": all(f.get("diag_con_credencial_revocada") == "credencial_invalida"
                                                  for f in res if "diag_con_credencial_revocada" in f),
@@ -336,6 +356,38 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
             "monitor_final": lab.revisiones_monitor(),
             "diagnostico_final": {k: d.get(k) for k in ("motor", "conectividad", "fase", "requiere_persona", "motivo",
                                                          "avisos_no_entregados", "operaciones_abiertas")}}
+
+
+def a1_resolver_red(JL, lab, op: dict | None, fila: dict, i: int) -> dict:
+    """A1 (E10b): con la operación incierta, el operador resuelve la marca de RED en Network Engine y se intenta
+    reenviar el mismo expediente. Debe seguir bloqueado (409) y Forms no debe mandar NINGÚN POST al portal.
+    La comprobación no depende del token del portal propio: cuenta las peticiones POST que llegan."""
+    r = {"estado_inicial": (op or {}).get("estado")}
+    sid = lab.diag().get("sesion_id")
+    for _ in range(10):                                   # S2 puede contestar 409 condition_persists: esperar
+        s, _, _ = lab.ne_api("POST", f"/sessions/{sid}/resolve", {"note": "revisión de RED en laboratorio (A1)"})
+        r["resolve_http"] = s
+        if s == 200:
+            break
+        time.sleep(3)
+    time.sleep(10)                                        # Forms lee la resolución del motor
+    tras = next((o for o in lab.operaciones() if o["id"] == (op or {}).get("id")), {})
+    r["estado_tras_resolver_en_ne"], r["revision"] = tras.get("estado"), tras.get("revision")
+    st0 = lab.portal_api("GET", "/_lab/estadisticas")
+    lab.rellenar(lab.analizar(), i)
+    s2, r2 = lab.enviar()
+    time.sleep(1)
+    st1 = lab.portal_api("GET", "/_lab/estadisticas")
+    r.update({"reenvio_http": s2, "reenvio_codigo": ((r2 or {}).get("detail") or {}).get("codigo")
+              if isinstance((r2 or {}).get("detail"), dict) else (r2 or {}).get("detail"),
+              "post_al_portal_por_el_reenvio": st1["peticiones_post"] - st0["peticiones_post"],
+              "tramites_del_expediente_en_portal": sum(1 for x in lab.recibidos_e10()
+                                                       if x["campos"].get("expediente") == fila["expediente"])})
+    # Se exige: era incierta, el reenvío fue rechazado por Forms y no salió nada hacia el portal. La revisión de red
+    # tampoco puede convertirla en confirmada (no es un acuse).
+    r["ok"] = (r["estado_inicial"] == "incierta" and s2 == 409 and r["post_al_portal_por_el_reenvio"] == 0
+               and r["estado_tras_resolver_en_ne"] != "confirmada")
+    return r
 
 
 def auditoria(JL, lab) -> dict:

@@ -3,7 +3,7 @@
 - Carpeta propia: %USERPROFILE%\\cauce-lab-e10 (CAUCE_E10_LAB para otra). Clon recomendado de Network Engine:
   %USERPROFILE%\\Cauce-AI-Center\\cauce-lab-e10\\ne-src, en el commit exacto que diga el informe E10.
 - Puertos +200: Monitor 8300, Forms 9065, Network Engine 9080, servidor de laboratorio 9070 (RC2 usa +0, RC3 +100).
-- Combinación: scripts/e10/versiones_e10.json (Monitor 14bfaac = RC3 + S5, Forms e55a45d = 0.2.0rc1 nativo). El
+- Combinación: scripts/e10/versiones_e10.json (Monitor 14bfaac = RC3 + S5, Forms 933fe89 = 0.2.0rc2 candidata consolidada). El
   versiones.json del laboratorio (RC3) no se toca. Credenciales SOLO de laboratorio, creadas con la orden oficial:
   Monitor read y review, y una «session» para el puesto Forms (forms-lab-puesto). Nunca admin fuera del motor.
 - No toca RC2 ni RC3 (se comprueba su huella antes y después), C:\\cauce-msi, %LOCALAPPDATA%\\CauceNetworkEngine,

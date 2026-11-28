@@ -28,7 +28,7 @@ class InstaladorE10Test(unittest.TestCase):
         self.assertEqual(e10.PUERTOS, (8300, 9065, 9080, 9070))
         self.assertTrue(set(e10.PUERTOS).isdisjoint(set(e10.C.PUERTOS_RC2) | set(e10.C.PUERTOS_RC3)))
         v = json.loads(e10.VERSIONES.read_text("utf-8"))
-        self.assertEqual(v["forms"]["commit"], "e55a45d99b34b10d6f477cda9dfe0a851dfc8b63")
+        self.assertEqual(v["forms"]["commit"], "933fe89954ea6a1fb5c3b89ec342ca3f0ea614fb")
         rc3 = json.loads((RAIZ / "scripts" / "laboratorio_integrado" / "versiones.json").read_text("utf-8"))
         self.assertEqual(rc3["forms"]["commit"], e10.C.RC3["forms"], "versiones.json sigue en RC3")
         self.assertEqual(rc3["monitor"]["commit"], e10.C.RC3["monitor"])
