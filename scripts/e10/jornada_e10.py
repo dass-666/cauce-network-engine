@@ -115,6 +115,14 @@ def construir(JL, forms: Path, monitor: Path, monitor_py: str, salida: Path):
                    {"forms_requiere_persona": any(x.get("requiere_persona") for x in s.get("activas") or []
                                                   if (x.get("etiqueta") or "").startswith("forms-"))}
 
+        def forms_en_monitor(self) -> dict:
+            """E10c: lo que Monitor muestra del puesto Forms (alerta y revisión local declarada)."""
+            s = (self.mon().get("sesiones") or {})
+            f = [x for x in s.get("activas") or [] if x.get("es_forms") or (x.get("etiqueta") or "").startswith("forms-")]
+            return {"requiere_persona": any(x.get("requiere_persona") for x in f),
+                    "revision_local": [x.get("revision_local") for x in f],
+                    "revisiones_forms": s.get("revisiones_forms"), "revisiones_pendientes": s.get("revisiones_pendientes")}
+
         def reiniciar_monitor(self) -> None:
             self.monitor.matar()
             self.monitor.iniciar()
@@ -330,7 +338,8 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
                 and not (k in a1_ops and v == "revisada"
                          and (ops.get(k, {}).get("revision") or {}).get("resultado") == "sin_determinar")}
     d = lab.diag()
-    return {"jornada": etiqueta, "expedientes": n, "fallos": fallos, "resultados": res, "verificadas": verificadas,
+    lr_final = local_review_final(lab, ops)
+    return {"jornada": etiqueta, "local_review_final": lr_final, "expedientes": n, "fallos": fallos, "resultados": res, "verificadas": verificadas,
             "portal": {"recibidos": st1["recibidos"] - st0["recibidos"], "duplicados": st1["duplicados"],
                        "peticiones_post": st1["peticiones_post"] - st0["peticiones_post"],
                        "reintentos_mismo_token": st1["reintentos_mismo_token"] - st0["reintentos_mismo_token"],
@@ -346,6 +355,10 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
                                                   for f in res if f.get("fallo") == "frase_incorrecta"),
                 "capacidad_respetada": all(f["recibidos_vs_capacidad"]["recibidos"] <= f["recibidos_vs_capacidad"]["capacidad"]
                                            for f in res if "recibidos_vs_capacidad" in f),
+                # N5: tras resolver en NE, la alerta sigue visible en NE y Monitor mientras la operación no tenga resultado
+                "n5_alerta_conservada": all(f["a1"]["n5_alerta_conservada"] for f in res if "a1" in f) if any("a1" in f for f in res) else None,
+                # local_review que ve Network Engine = lo que el puesto tiene de verdad (pending si queda alguna incierta)
+                "local_review_coherente": lr_final.get("coherente"),
                 # A1: resolver la marca de RED en Network Engine no deja reenviar una operación incierta
                 "a1_resolver_red_no_reenvia": all(f["a1"]["ok"] for f in res if "a1" in f) if any("a1" in f for f in res) else None,
                 "monitor_ve_revision_de_cada_incierta": all(monitor_vio) if monitor_vio else None,
@@ -358,6 +371,20 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
                                                          "avisos_no_entregados", "operaciones_abiertas")}}
 
 
+def local_review_final(lab, ops: dict) -> dict:
+    """E10c: tras unos latidos, ¿lo que declara el puesto (local_review en el motor y en Monitor) coincide con su registro?
+    Con un Forms que no lo envía (rc2) queda None: no es un fallo, es «el puesto no lo informa»."""
+    pendientes = sum(1 for o in ops.values() if o["estado"] == "incierta")
+    time.sleep(12)                                        # al menos un latido (7 s) y una lectura de Monitor
+    _, vs, _ = lab.ne_api("GET", f"/sessions/{lab.diag().get('sesion_id')}")
+    vs = (vs or {}).get("session", vs) if isinstance(vs, dict) else {}
+    ne_lr = vs.get("local_review")
+    esperado = "pending" if pendientes else "none"
+    return {"inciertas_en_el_puesto": pendientes, "esperado": esperado, "en_network_engine": ne_lr,
+            "en_monitor": lab.forms_en_monitor().get("revision_local"),
+            "coherente": None if ne_lr is None else ne_lr == esperado}
+
+
 def a1_resolver_red(JL, lab, op: dict | None, fila: dict, i: int) -> dict:
     """A1 (E10b): con la operación incierta, el operador resuelve la marca de RED en Network Engine y se intenta
     reenviar el mismo expediente. Debe seguir bloqueado (409) y Forms no debe mandar NINGÚN POST al portal.
@@ -365,14 +392,32 @@ def a1_resolver_red(JL, lab, op: dict | None, fila: dict, i: int) -> dict:
     r = {"estado_inicial": (op or {}).get("estado")}
     sid = lab.diag().get("sesion_id")
     for _ in range(10):                                   # S2 puede contestar 409 condition_persists: esperar
-        s, _, _ = lab.ne_api("POST", f"/sessions/{sid}/resolve", {"note": "revisión de RED en laboratorio (A1)"})
+        s, b, _ = lab.ne_api("POST", f"/sessions/{sid}/resolve", {"note": "revisión de RED en laboratorio (A1)"})
         r["resolve_http"] = s
-        if s == 200:
+        err = (b or {}).get("error") or {} if isinstance(b, dict) else {}
+        r["resolve_codigo"], r["resolve_condicion"] = err.get("code"), (err.get("details") or {}).get("condition")
+        if s == 200 or r["resolve_codigo"] == "condition_persists":   # condition_persists no cambia esperando
             break
         time.sleep(3)
     time.sleep(10)                                        # Forms lee la resolución del motor
     tras = next((o for o in lab.operaciones() if o["id"] == (op or {}).get("id")), {})
     r["estado_tras_resolver_en_ne"], r["revision"] = tras.get("estado"), tras.get("revision")
+    # N5 (E10c): mientras la operación siga sin resultado, la alerta NO debe desaparecer de Network Engine ni de Monitor.
+    _, vs, _ = lab.ne_api("GET", f"/sessions/{lab.diag().get('sesion_id') or sid}")
+    vs = (vs or {}).get("session", vs) if isinstance(vs, dict) else {}
+    r["ne_tras_resolver"] = {"requires_human": vs.get("requires_human"), "local_review": vs.get("local_review"),
+                             "human_reason": vs.get("human_reason")}
+    t0, fm = time.time(), {}
+    while time.time() - t0 < 30:                          # Monitor lee el motor cada 10 s
+        fm = lab.forms_en_monitor()
+        if fm["requiere_persona"] and "pending" in fm["revision_local"]:
+            break
+        time.sleep(2)
+    r["monitor_tras_resolver"] = fm
+    sigue_sin_resultado = r["estado_tras_resolver_en_ne"] == "incierta" or (
+        r["estado_tras_resolver_en_ne"] == "revisada" and (r["revision"] or {}).get("resultado") in ("sin_determinar", "recibido"))
+    r["n5_alerta_conservada"] = (not sigue_sin_resultado) or bool(
+        r["ne_tras_resolver"]["requires_human"] and fm.get("requiere_persona"))
     st0 = lab.portal_api("GET", "/_lab/estadisticas")
     lab.rellenar(lab.analizar(), i)
     s2, r2 = lab.enviar()
