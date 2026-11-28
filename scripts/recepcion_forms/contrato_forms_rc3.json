@@ -1,0 +1,51 @@
+{
+  "version_contrato": "rc3-1",
+  "candidata": {
+    "network_engine": "f93dd58eeddc1cc3032711bb0b6e378708063d41",
+    "monitor": "7b92446e884239b52c1253d57ee97d244fe4067b",
+    "forms_base": "aa1bb0295b32c17ba0435490678adf1ee54c55a0"
+  },
+  "forms_base_corto": "aa1bb02",
+  "archivos_de_referencia": {
+    "cauce/client.py": "c6f3d3d5bf230a0e746be0dd670020a98c555fd6fc918a878feaefcf992c0207",
+    "cauce/session_consumer.py": "64511d9de6214553bdda9706467696704c01012939596ba3165685c1ca1ad0e8"
+  },
+  "credencial": {
+    "ambito_permitido": "session",
+    "ambitos_prohibidos": ["admin", "review", "read"],
+    "una_por_instalacion": true,
+    "almacenamiento_windows": "DPAPI (cauce token create --out)"
+  },
+  "etiqueta": {
+    "regex": "^[a-z0-9][a-z0-9_-]{1,31}$",
+    "estable_por_puesto": true,
+    "ejemplo": "forms-ventanilla-1"
+  },
+  "latidos": {
+    "intervalo_minimo_s": 0.5,
+    "intervalo_recomendado_s": [5, 10],
+    "timeout_cliente_minimo_s": 5.0,
+    "sesiones_maximas_motor": 8
+  },
+  "llamadas_permitidas": [
+    "POST /api/v1/sessions",
+    "POST /api/v1/sessions/{id}/heartbeat",
+    "GET /api/v1/sessions/{id}",
+    "DELETE /api/v1/sessions/{id}"
+  ],
+  "llamadas_prohibidas_para_forms": [
+    "POST /api/v1/sessions/{id}/resolve",
+    "POST /api/v1/sessions/pending/{id}/resolve",
+    "POST /api/v1/tokens",
+    "cualquier /sim/*"
+  ],
+  "reglas": [
+    "Solo el clic y la espera van dentro de operacion(); relleno y confirmación ENVIAR van fuera.",
+    "Fallo a medias = latido error + in_progress; nunca se reintenta solo.",
+    "requires_human solo lo quita una persona (admin o review desde Monitor), nunca Forms.",
+    "Sin respuesta del motor = «sin información de red», nunca «sin internet».",
+    "confirmado_recepcion = False hasta folio o acuse del portal.",
+    "Solo portal de laboratorio propio en 127.0.0.1; ningún portal externo; FONACOT ni se usa ni se sondea.",
+    "Ningún dato personal real."
+  ]
+}

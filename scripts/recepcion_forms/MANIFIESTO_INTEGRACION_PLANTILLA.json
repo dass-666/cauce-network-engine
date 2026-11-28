@@ -1,0 +1,23 @@
+{
+  "candidata": "RC3 + Forms nativo (PLANTILLA: rellenar al recibir el trabajo de Ronaldo)",
+  "estado": "SIN VALIDAR",
+  "network_engine": {"repo": "dass-666/cauce-network-engine", "commit": "f93dd58eeddc1cc3032711bb0b6e378708063d41",
+                     "arbol_git": "990b572b91798a281c205a8b50d09e5e8dc2ccae",
+                     "rama_de_integracion": "<claude/integracion-forms-...>", "commit_de_integracion": "<solo cambia versiones.json>"},
+  "monitor": {"repo": "dass-666/Cauce-monitor-engine", "commit": "7b92446e884239b52c1253d57ee97d244fe4067b",
+              "arbol_git": "56798bc8f8f8988236238c57f95c3601663afc5d"},
+  "forms": {"repo": "dass-666/CAUCE-UNIVERSAL-CONEXION", "base": "aa1bb0295b32c17ba0435490678adf1ee54c55a0",
+            "rama": "<rama de Ronaldo>", "commit": "<commit completo>", "arbol_git": "<git rev-parse COMMIT^{tree}>",
+            "cliente_rc3_sha256": "c6f3d3d5bf230a0e746be0dd670020a98c555fd6fc918a878feaefcf992c0207",
+            "consumidor_rc3_sha256": "64511d9de6214553bdda9706467696704c01012939596ba3165685c1ca1ad0e8"},
+  "comprobaciones": {
+    "1_estatica": {"veredicto": "<APTO_PARA_PRUEBA_DINAMICA|REVISAR|NO_APTO>", "evidencia": "<ruta>"},
+    "2_dinamica": {"resultado": "<n/12>", "evidencia": "<ruta>"},
+    "3_contrato_motor": {"resultado": "<pytest>", "evidencia": "<ruta>"},
+    "4_laboratorio_rapido": {"resultado": "<PASA/FALLA/PENDIENTE/OMITIDA>", "evidencia": "<ruta>", "tipo": "SIMULADA"},
+    "5_fisica": {"resultado": "PENDIENTE", "tipo": "FÍSICA"}
+  },
+  "autorizado_por": "<Diego, fecha, mensaje>",
+  "limites": ["Sin envíos reales", "Solo portal de laboratorio en 127.0.0.1", "Sin datos personales reales",
+              "Continuidad del navegador ante cambio físico de proveedor: sin probar"]
+}
