@@ -1,0 +1,145 @@
+name: e10-windows
+# E10 · Combinación integral de LABORATORIO con Forms nativo en Windows (runner de GitHub, NO la MSI ni Windows 11
+# físico). Red SIMULADA, portal propio en 127.0.0.1 y datos ficticios. Comprueba que E10 se instala aparte de RC3
+# sin cambiarle un archivo, el paso 09b con Forms nativo y las jornadas 6/10/20/50. La prueba prolongada (hasta
+# 5 h 40, límite de 6 h del runner) solo se lanza a mano (workflow_dispatch).
+on:
+  push:
+    branches: ["claude/e10-*"]
+  workflow_dispatch:
+    inputs:
+      duracion_min:
+        description: "Minutos de la prueba prolongada (0 = no lanzarla)"
+        default: "330"
+jobs:
+  e10-integral:
+    name: E10 independiente de RC3 + 09b nativo + jornadas · Windows
+    runs-on: windows-latest
+    timeout-minutes: 170
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Clones como en la MSI (RC3 en f93dd58; E10 en este commit), cada uno en su carpeta
+        shell: pwsh
+        run: |
+          $base = Join-Path $env:USERPROFILE "Cauce-AI-Center"
+          git clone -q https://github.com/${{ github.repository }}.git "$base\cauce-lab-rc3\ne-src"
+          git -C "$base\cauce-lab-rc3\ne-src" checkout -q --detach f93dd58eeddc1cc3032711bb0b6e378708063d41
+          git clone -q https://github.com/${{ github.repository }}.git "$base\cauce-lab-e10\ne-src"
+          git -C "$base\cauce-lab-e10\ne-src" fetch -q origin ${{ github.sha }}
+          git -C "$base\cauce-lab-e10\ne-src" checkout -q --detach ${{ github.sha }}
+      - name: RC3 instalada con SU INSTALAR_RC3.cmd (como estaría en la MSI)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\INSTALAR_RC3.cmd" f93dd58eeddc1cc3032711bb0b6e378708063d41
+      - name: Huella completa de RC3 (clon + laboratorio) ANTES de E10
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "rc3_antes.txt"
+          foreach ($d in "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-rc3", "$env:USERPROFILE\cauce-lab-rc3") {
+            Get-ChildItem -Recurse -File -Force $d | Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Sort-Object FullName | ForEach-Object { "{0} {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash, $_.FullName } |
+              Out-File -Append -Encoding utf8 $out
+          }
+          (Get-Content $out).Count
+      - name: INSTALAR_E10.cmd con un commit EQUIVOCADO se niega
+        shell: cmd
+        run: |
+          call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\INSTALAR_E10.cmd" f93dd58
+          if not errorlevel 1 (echo Debio negarse & exit /b 1)
+          if exist "%USERPROFILE%\cauce-lab-e10\.cauce-lab" (echo No debio crear nada & exit /b 1)
+          exit /b 0
+      - name: INSTALAR_E10.cmd (carpeta propia, puertos +200)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\INSTALAR_E10.cmd" ${{ github.sha }}
+      - name: VALIDAR_E10.cmd rapido (paso 09b con Forms nativo exigido)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\VALIDAR_E10.cmd" rapido --no-interactivo --duracion 120
+      - name: DETENER_E10.cmd
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\DETENER_E10.cmd"
+      - name: Respaldo y restauración segura (E10 parada)
+        shell: pwsh
+        run: |
+          $ne = "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10"
+          python "$ne\e10.py" respaldar
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $z = Get-ChildItem "$env:USERPROFILE\cauce-lab-e10-respaldos\*.zip" | Select-Object -Last 1
+          python "$ne\e10.py" restaurar $z.FullName
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if (Test-Path "$env:USERPROFILE\cauce-lab-e10\datos\network-engine\sessions_state.json") { Write-Output "debio quedar solo como copia anterior"; exit 1 }
+          exit 0
+      - name: JORNADAS_E10.cmd 6 10 20 50 (tres motores + Forms nativo, simulado)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\JORNADAS_E10.cmd" 6 10 20 50
+      - name: RC3 sin un solo archivo cambiado tras instalar, validar y usar E10
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "rc3_despues.txt"
+          foreach ($d in "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-rc3", "$env:USERPROFILE\cauce-lab-rc3") {
+            Get-ChildItem -Recurse -File -Force $d | Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Sort-Object FullName | ForEach-Object { "{0} {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash, $_.FullName } |
+              Out-File -Append -Encoding utf8 $out
+          }
+          $dif = Compare-Object (Get-Content (Join-Path $env:RUNNER_TEMP "rc3_antes.txt")) (Get-Content $out)
+          if ($dif) { $dif | Format-Table -AutoSize | Out-String -Width 400; exit 1 }
+          Write-Output "RC3 intacta: $((Get-Content $out).Count) archivos con el mismo SHA-256"
+      - name: Detener todo
+        if: always()
+        shell: cmd
+        run: |
+          call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\DETENER_E10.cmd" --forzar
+          exit /b 0
+      - name: Reunir evidencias
+        if: always()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:GITHUB_WORKSPACE "evidencias-e10"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          if (Test-Path "$env:USERPROFILE\cauce-lab-e10\informes") { Copy-Item -Recurse -Force "$env:USERPROFILE\cauce-lab-e10\informes" $dst }
+          Copy-Item -Force "$env:USERPROFILE\cauce-lab-e10\instalacion_e10.json" $dst -ErrorAction SilentlyContinue
+          Copy-Item -Force "$env:USERPROFILE\cauce-lab-e10\restauracion-*.json" $dst -ErrorAction SilentlyContinue
+          Copy-Item -Force (Join-Path $env:RUNNER_TEMP "rc3_*.txt") $dst -ErrorAction SilentlyContinue
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencias-e10-windows
+          path: evidencias-e10
+  e10-prolongada:
+    name: E10 prolongada (jornadas de 10 seguidas) · Windows
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.duracion_min != '0'
+    runs-on: windows-latest
+    timeout-minutes: 355
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Clon E10 en este commit
+        shell: pwsh
+        run: |
+          $base = Join-Path $env:USERPROFILE "Cauce-AI-Center"
+          git clone -q https://github.com/${{ github.repository }}.git "$base\cauce-lab-e10\ne-src"
+          git -C "$base\cauce-lab-e10\ne-src" fetch -q origin ${{ github.sha }}
+          git -C "$base\cauce-lab-e10\ne-src" checkout -q --detach ${{ github.sha }}
+      - name: INSTALAR_E10.cmd
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\INSTALAR_E10.cmd" ${{ github.sha }}
+      - name: Prueba prolongada
+        shell: pwsh
+        run: python "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-e10\ne-src\scripts\e10\e10.py" jornadas --duracion-min ${{ github.event.inputs.duracion_min }}
+      - name: Reunir evidencias
+        if: always()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:GITHUB_WORKSPACE "evidencias-e10-prolongada"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          if (Test-Path "$env:USERPROFILE\cauce-lab-e10\informes") { Copy-Item -Recurse -Force "$env:USERPROFILE\cauce-lab-e10\informes" $dst }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidencias-e10-prolongada-windows
+          path: evidencias-e10-prolongada

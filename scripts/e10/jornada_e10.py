@@ -34,6 +34,22 @@ def cargar_jl(forms: Path):
     spec = importlib.util.spec_from_file_location("jornada_laboratorio_forms", forms / "scripts" / "jornada_laboratorio.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
+    if os.name == "nt":
+        # El guion de Forms usa os.killpg y signal.SIGKILL, que no existen en Windows (AttributeError, no OSError):
+        # sus jornadas solo corrían en Linux. Aquí se sustituye por taskkill /T (árbol completo: Chromium incluido).
+        def matar(self) -> None:
+            if self.p and self.p.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(self.p.pid), "/T", "/F"], capture_output=True)
+                self.p.wait(15)
+
+        def parar(self) -> None:
+            if self.p and self.p.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(self.p.pid), "/T"], capture_output=True)
+                try:
+                    self.p.wait(10)
+                except subprocess.TimeoutExpired:
+                    matar(self)
+        m.Proc.matar, m.Proc.parar = matar, parar
     return m
 
 
