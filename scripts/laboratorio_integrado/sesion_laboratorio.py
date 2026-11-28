@@ -9,6 +9,12 @@ Hace de «dueño» de la sesión lo que hará Cauce Forms cuando se integre (sin
 una operación en curso. Nunca envía el formulario. Comprueba que tras la interrupción nada se repite solo: el formulario
 sigue sin enviarse y Network Engine no lanzó ninguna tarea.
 
+E10 (S4): si el Forms instalado trae ``scripts/paso_09b_nativo.py`` (Forms nativo, 0.2.0rc1+), el dueño de la sesión es
+el código REAL de Forms (``DiagnosticoRed`` + ``Puesto`` + ``BrowserSession``) y el informe dice «Forms nativo». El
+consumidor de referencia de este archivo (``--hijo``) queda SOLO como respaldo, identificado como tal en el informe:
+se usa si el Forms instalado no trae el guion, o si se pide con CAUCE_LAB_09B_MODO=referencia. Con
+CAUCE_LAB_09B_EXIGIR_NATIVO=1 (laboratorio E10) el respaldo no se admite: sin guion nativo el paso FALLA.
+
 Se ejecuta en dos partes: el proceso padre (Python del laboratorio) crea una credencial `session` temporal y lanza el
 hijo con el Python de Forms (que tiene Playwright); los tokens viajan por variables de entorno, nunca por argumentos.
 """
@@ -59,8 +65,20 @@ def prueba(it) -> dict:
     env.update({"CAUCE_LAB_NE_PORT": str(port), "CAUCE_LAB_NE_ADMIN": adm, "CAUCE_LAB_NE_SESSION": tok["token"],
                 "CAUCE_LAB_FORMS_URL": f"http://127.0.0.1:{lb.p['forms']}/lab/01_tradicional.html",
                 "CAUCE_LAB_ETIQUETA": etiqueta})
+    nativo = lb.forms / "scripts" / "paso_09b_nativo.py"
+    pedido = (os.environ.get("CAUCE_LAB_09B_MODO") or "nativo").strip().lower()
+    exigir = os.environ.get("CAUCE_LAB_09B_EXIGIR_NATIVO") == "1"
+    if nativo.exists() and pedido != "referencia":
+        modo, args = "forms_nativo", [lb.py("forms"), str(nativo)]
+    elif exigir:
+        _http(port, f"/tokens/{tok['id']}", adm, "DELETE")
+        return {"estado": "FALLA", "evidencia": "SIMULADA", "modo": "ninguno",
+                "detalle": "[Forms nativo exigido] el Forms instalado no trae scripts/paso_09b_nativo.py "
+                           f"(¿commit anterior a 0.2.0rc1?) o se pidió el respaldo con CAUCE_LAB_09B_MODO={pedido}"}
+    else:
+        modo, args = "consumidor_referencia", [lb.py("forms"), os.path.abspath(__file__), "--hijo"]
     try:
-        r = subprocess.run([lb.py("forms"), os.path.abspath(__file__), "--hijo"], cwd=str(lb.forms), env=env,
+        r = subprocess.run(args, cwd=str(lb.forms), env=env,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=420)
     finally:
         _http(port, f"/tokens/{tok['id']}", adm, "DELETE")
@@ -71,6 +89,8 @@ def prueba(it) -> dict:
     _, tareas1 = _http(port, "/tasks", adm)
     n0, n1 = len((tareas0 or {}).get("tasks") or []), len((tareas1 or {}).get("tasks") or [])
     res["tareas_lanzadas_por_el_motor"] = n1 - n0
+    res["modo"] = modo
+    etiqueta_modo = "[Forms nativo] " if modo == "forms_nativo" else "[RESPALDO: consumidor de referencia, NO es Forms] "
     vistas = [f for f, ok in res.get("fases", {}).items() if ok]
     faltan = [f for f, ok in res.get("fases", {}).items() if not ok]
     sin_repeticion = res.get("formulario_enviado") is False and n1 == n0
@@ -78,11 +98,14 @@ def prueba(it) -> dict:
     ok = (not faltan and sin_repeticion and res.get("sigue_pidiendo_persona_tras_recuperar") is True
           and not res.get("error"))
     if ok:
-        it.mf("F4", "Aprobado en simulación", "sesión con Chromium real en el portal propio; red simulada", "sesión de laboratorio")
-        it.mf("F9", "Aprobado en simulación", "la sesión pasa por pérdida, recuperación e intervención humana", "sesión de laboratorio")
+        quien = "Forms nativo" if modo == "forms_nativo" else "consumidor de referencia (respaldo)"
+        it.mf("F4", "Aprobado en simulación", f"sesión con Chromium real en el portal propio; red simulada; {quien}",
+              "sesión de laboratorio")
+        it.mf("F9", "Aprobado en simulación", f"la sesión pasa por pérdida, recuperación e intervención humana; {quien}",
+              "sesión de laboratorio")
     (it.dir / "sesion_laboratorio.json").write_text(json.dumps(res, ensure_ascii=False, indent=2), "utf-8")
-    return {"estado": "PASA" if ok else "FALLA", "evidencia": "SIMULADA",
-            "detalle": (f"fases vistas: {', '.join(vistas)}" + (f"; FALTAN: {', '.join(faltan)}" if faltan else "")
+    return {"estado": "PASA" if ok else "FALLA", "evidencia": "SIMULADA", "modo": modo,
+            "detalle": (etiqueta_modo + f"fases vistas: {', '.join(vistas)}" + (f"; FALTAN: {', '.join(faltan)}" if faltan else "")
                         + f"; formulario enviado: {res.get('formulario_enviado')}; tareas del motor: {n1 - n0}"
                         + f"; sigue pidiendo persona tras recuperar: {res.get('sigue_pidiendo_persona_tras_recuperar')}"
                         + (f"; error: {res['error']}" if res.get("error") else "")

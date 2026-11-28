@@ -11,6 +11,7 @@ import unittest
 from helpers import sim_engine
 from test_read_tokens import SIM_SECRETS  # noqa: F401  (carga el entorno de pruebas igual que el resto)
 from test_sessions import FakeClock, SessionApiBase
+from cauce.client import CauceAPIError
 from cauce.audit import AuditLog
 from cauce.session_store import SessionStore
 from cauce.sessions import SessionRegistry
@@ -300,6 +301,13 @@ class EventosPublicadosTest(SessionApiBase):
         self.clock.advance(1)
         self.a.heartbeat(True, operation="in_progress")
         self.fail_link("sim-a")
+        # E10 S2: mientras el dueño siga informando la operación en curso con la sesión cortada, resolver da 409
+        # condition_persists (antes se «resolvía» y la marca reaparecía al instante). El dueño informa el final y entonces sí.
+        with self.assertRaises(CauceAPIError) as cm:
+            self.admin._call("POST", f"/sessions/{self.a.session_id}/resolve")
+        self.assertEqual((cm.exception.status, cm.exception.code), (409, "condition_persists"))
+        self.clock.advance(1)
+        self.a.heartbeat(True, operation="idle")
         self.admin._call("POST", f"/sessions/{self.a.session_id}/resolve")
         self.eng.check_resume(10_000.0, 1_000.0)
         raw = self.raw("GET", "/api/v1/status/events?since=0&limit=500", self.read_token)[1]

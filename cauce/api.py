@@ -183,7 +183,17 @@ class CauceAPI:
         @r("POST", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})/resolve")
         def sess_resolve(req, m, q, body):
             # solo admin (el operador humano): el dueño de la sesión no puede darse por revisado a sí mismo
-            return e.sessions.view(e.sessions.resolve(m["sid"]))
+            # E10 S2: 409 condition_persists si la condición sigue (la marca no se toca)
+            p = req._cauce_principal
+            return e.sessions.view(e.sessions.resolve(m["sid"], body if isinstance(body, dict) else {},
+                                                      resolved_by=getattr(p, "name", "operator")))
+
+        # E10 S3: el DUEÑO consulta qué revisiones administrativas tuvieron las marcas de su credencial o etiqueta.
+        # Solo informativo: confirms_receipt es siempre false (no es un acuse ni desbloquea nada).
+        @r("GET", P + r"/sessions/(?P<sid>bs_[0-9a-f]{12})/reviews", SCOPE_SESSION)
+        def sess_reviews(req, m, q, body):
+            p = _session_principal(req)
+            return e.sessions.reviews_for(m["sid"], p.token_id)
 
         # E7: marcas de «revisar a mano» cuya sesión ya no existe. admin o (E8) la credencial «review».
         @r("GET", P + "/sessions/pending", SCOPE_REVIEW)
@@ -223,7 +233,9 @@ class CauceAPI:
                                    grant_id=m["tid"])
                 raise
             e.audit.record("token.revoked", f"Credencial revocada: {rec['name']}", grant_id=rec["id"], name=rec["name"])
-            return rec
+            # E10: su sesión de navegador (si la había) se cierra; la marca queda pendiente para su etiqueta
+            cerradas = e.sessions.close_for_revoked_owner(rec["id"])
+            return dict(rec, sessions_closed=len(cerradas)) if cerradas else rec
 
         @r("GET", P + "/diagnostics")
         def diag(req, m, q, body):
@@ -401,9 +413,12 @@ class CauceAPI:
         h.end_headers()
         h.wfile.write(data)
 
-    def _error(self, h, status: int, code: str, message: str) -> None:
+    def _error(self, h, status: int, code: str, message: str, details: Optional[dict] = None) -> None:
         h._cauce_code = code
-        self._send(h, status, {"error": {"code": code, "message": message, "status": status}})
+        err = {"code": code, "message": message, "status": status}
+        if details:
+            err["details"] = details              # E10: p. ej. retry_after_s (S1) o condition (S2); sin secretos
+        self._send(h, status, {"error": err})
 
     def _dispatch(self, h: BaseHTTPRequestHandler, method: str) -> None:
         h._cauce_principal = None
@@ -476,7 +491,7 @@ class CauceAPI:
         except TokenError as e:
             self._error(h, e.status, e.code, e.message)
         except SessionError as e:
-            self._error(h, e.status, e.code, e.message)
+            self._error(h, e.status, e.code, e.message, getattr(e, "details", None))
         except EngineError as e:
             self._error(h, e.status, e.code, e.message)
         except RouteError as e:

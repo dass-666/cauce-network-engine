@@ -52,7 +52,9 @@ class SobrantesTest(unittest.TestCase):
         self.assertEqual(r["credenciales_revocadas"], 2)
         vivas = {x["label"]: x for x in self.admin._call("GET", "/status/sessions")["sessions"]}
         self.assertIn("forms-a", vivas, "lo ajeno sigue intacto")
-        self.assertTrue(vivas["lab-supervision"]["requires_human"], "una marca nunca se quita sola")
+        # E10: revocar su credencial cierra la sesión marcada, pero la marca nunca se quita sola: queda pendiente
+        pend = self.admin._call("GET", "/sessions/pending")["pending"]
+        self.assertTrue(any(p["label"] == "lab-supervision" for p in pend), "una marca nunca se quita sola")
         self.assertNotIn("lab-forms", vivas)
         self.assertTrue(ajena.heartbeat()["id"])
 

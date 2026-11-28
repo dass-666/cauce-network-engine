@@ -272,16 +272,24 @@ class CauceSessionClient:
             raise RuntimeError("Primero register()")
         return self.session_id
 
-    def heartbeat(self, ok: bool = True, error_code: Optional[str] = None, operation: Optional[str] = None) -> dict:
+    def heartbeat(self, ok: bool = True, error_code: Optional[str] = None, operation: Optional[str] = None,
+                  local_review: Optional[str] = None) -> dict:
         body: dict[str, Any] = {"status": "ok" if ok else "error"}
         if not ok:
             body["error_code"] = error_code or "other"
         if operation is not None:
             body["operation"] = operation          # "idle" | "in_progress"
+        if local_review is not None:
+            body["local_review"] = local_review    # E10: "none" | "pending" (operaciones locales sin revisar)
         return self._c._call("POST", f"/sessions/{self._sid()}/heartbeat", body)
 
     def get(self) -> dict:
         return self._c._call("GET", f"/sessions/{self._sid()}")
+
+    def reviews(self) -> dict:
+        """E10 S3: revisiones administrativas de las marcas de esta credencial/etiqueta. Solo informativo:
+        ``confirms_receipt`` es siempre False; nunca desbloquea ni confirma una operación local."""
+        return self._c._call("GET", f"/sessions/{self._sid()}/reviews")
 
     def close(self) -> dict:
         out = self._c._call("DELETE", f"/sessions/{self._sid()}")

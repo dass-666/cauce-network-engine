@@ -225,3 +225,93 @@ PENDING_ID_RE = re.compile(r"^pm_[0-9a-f]{12}$")
 def pending_id_for(p: dict) -> str:
     raw = json.dumps({k: p.get(k) for k in ("owner_token_id", "label", "reason", "session_id", "since")}, sort_keys=True)
     return "pm_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+REVIEWS_SCHEMA = "cauce.sessions-reviews/1"
+REVIEW_ID_RE = re.compile(r"^rv_[0-9a-f]{12}$")
+
+
+class ReviewStore:
+    """E10 S3: resoluciones administrativas de marcas «revisar a mano», en un archivo APARTE de sessions_state.json.
+
+    Aparte a propósito: RC3 no conoce este archivo y lo ignora, así que volver a RC3 no le hace ver su estado como dañado.
+    Mismo método de escritura (temporal, fsync, reemplazo, resumen SHA-256, respaldo .bak). Lista blanca de campos; la nota
+    del operador NO se guarda aquí (solo su huella): la nota completa queda en la auditoría.
+    Si el archivo está dañado se usa el .bak; si tampoco vale, se empieza vacío (perder este registro no quita ninguna
+    marca: solo deja de informar al dueño de revisiones pasadas)."""
+
+    FIELDS = ("id", "kind", "owner_token_id", "label", "session_id", "pending_id", "reason", "resolved_at",
+              "resolved_by", "note_sha256")
+
+    def __init__(self, path: str):
+        self.path = path
+        self.bak = path + ".bak"
+        self._lock = threading.Lock()
+        self.status = "missing"
+
+    @classmethod
+    def _clean(cls, d: Any) -> Optional[dict]:
+        if not isinstance(d, dict) or not REVIEW_ID_RE.match(str(d.get("id", ""))):
+            return None
+        out = {k: d.get(k) for k in cls.FIELDS}
+        if out["kind"] not in ("session_resolve", "pending_resolve") or not isinstance(out["resolved_at"], (int, float)):
+            return None
+        if any(out[k] is not None and not isinstance(out[k], str)
+               for k in ("owner_token_id", "label", "session_id", "pending_id", "reason", "resolved_by", "note_sha256")):
+            return None
+        return out
+
+    def _read(self, path: str) -> Optional[list]:
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read(MAX_BYTES + 1)
+            if len(raw) > MAX_BYTES:
+                return None
+            doc = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        if not isinstance(doc, dict) or doc.get("schema") != REVIEWS_SCHEMA or not isinstance(doc.get("reviews"), list):
+            return None
+        if doc.get("sha256") != _digest({"schema": REVIEWS_SCHEMA, "reviews": doc["reviews"]}):
+            return None
+        return [r for r in (self._clean(x) for x in doc["reviews"]) if r is not None]
+
+    def load(self) -> list[dict]:
+        if not os.path.exists(self.path) and not os.path.exists(self.bak):
+            self.status = "missing"
+            return []
+        for path, status in ((self.path, "ok"), (self.bak, "backup")):
+            if os.path.exists(path):
+                r = self._read(path)
+                if r is not None:
+                    self.status = status
+                    return r
+        self.status = "corrupt"
+        return []
+
+    def save(self, reviews: list[dict]) -> None:
+        body = {"schema": REVIEWS_SCHEMA, "reviews": [{k: r.get(k) for k in self.FIELDS} for r in reviews]}
+        doc = {**body, "sha256": _digest(body)}
+        with self._lock:
+            os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+            tmp = f"{self.path}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(doc, fh, ensure_ascii=False)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                if os.path.exists(self.path) and self._read(self.path) is not None:
+                    with open(self.path, "rb") as src, open(self.bak + ".tmp", "wb") as dst:
+                        dst.write(src.read())
+                        dst.flush()
+                        os.fsync(dst.fileno())
+                    _replace(self.bak + ".tmp", self.bak)
+                _replace(tmp, self.path)
+            finally:
+                for t in (tmp, self.bak + ".tmp"):
+                    if os.path.exists(t):
+                        try:
+                            os.remove(t)
+                        except OSError:
+                            pass

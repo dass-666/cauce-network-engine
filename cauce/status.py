@@ -46,7 +46,7 @@ _EVENT_FIELDS: dict[str, tuple[str, ...]] = {
     "session.pending_resolved": ("pending_id",),                     # E8: centro de revisiones de Monitor
     "session.restored": ("session_id", "requires_human"),
     "session.expired": ("session_id", "requires_human"),
-    "session.replaced": ("session_id", "requires_human"),
+    "session.replaced": ("session_id", "requires_human", "reason"),          # E10: replaced_by_owner (S1)
     "session.state_corrupt": (),
     "session.state_recovered_from_backup": (),
     "session.state_write_failed": (),

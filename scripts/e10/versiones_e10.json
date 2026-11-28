@@ -1,0 +1,27 @@
+{
+  "_nota": "Combinación E10 (laboratorio, sin fusionar, sin prueba física): Network Engine = la carpeta desde la que se ejecuta (rama claude/e10-forms-nativo); Monitor y Forms en estos commits exactos. E10b fija Forms en la candidata consolidada 0.2.0rc2. versiones.json del laboratorio sigue fijando RC3 y no se toca. Monitor 14bfaac = 7b92446 (RC3) + S5 (centro de revisiones: red frente a Forms).",
+  "network_engine": {
+    "version": "0.2.0.dev0",
+    "rama": "claude/e10-forms-nativo"
+  },
+  "monitor": {
+    "repo": "dass-666/cauce-monitor-engine",
+    "commit": "14bfaacdfc8126a9c77066c08ef02a11a4e4aa2d",
+    "rama": "claude/project-thread-nd92gq",
+    "version": "2.2.2-dev"
+  },
+  "forms": {
+    "repo": "dass-666/CAUCE-UNIVERSAL-CONEXION",
+    "commit": "933fe89954ea6a1fb5c3b89ec342ca3f0ea614fb",
+    "rama": "claude/candidata-consolidada",
+    "version": "0.2.0rc2",
+    "_nota": "E10b: candidata consolidada de Ronaldo (PR #3-#6 + correcciones A1/A2). Código bd5c066; 933fe89 solo añade informe, matriz, jornadas y manifiesto. Antes: e55a45d (0.2.0rc1)."
+  },
+  "puertos": {
+    "monitor": 8100,
+    "forms": 8865,
+    "network_engine": 8880,
+    "servidor_laboratorio": 8870
+  },
+  "_puertos": "Base del laboratorio; el lanzador E10 los desplaza +200 (Monitor 8300, Forms 9065, Network Engine 9080, servidor 9070) para no chocar con RC2 (+0) ni RC3 (+100)."
+}

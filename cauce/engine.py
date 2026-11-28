@@ -16,7 +16,7 @@ from .models import Connection, Health, TERMINAL_TASK_STATES
 from .net import Network
 from .policy import RotationController
 from .routing import RouteError, RouteManager
-from .session_store import SessionStore
+from .session_store import ReviewStore, SessionStore
 from .sessions import SessionRegistry
 
 
@@ -65,7 +65,9 @@ class Engine:
                                         default_timeout_s=float(sc.get("heartbeat_timeout_s", 30.0)),
                                         store=(SessionStore(os.path.join(cfg["data_dir"], "sessions_state.json"))
                                                if sc.get("persist", True) else None),
-                                        restore_max_age_s=float(sc.get("restore_max_age_s", 3600.0)))
+                                        restore_max_age_s=float(sc.get("restore_max_age_s", 3600.0)),
+                                        review_store=(ReviewStore(os.path.join(cfg["data_dir"], "sessions_reviews.json"))
+                                                      if sc.get("persist", True) else None))
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 

@@ -39,6 +39,20 @@ Aislamiento:
   (más antiguo), queda una marca general que se aplica a todo registro nuevo hasta que una
   persona resuelva alguna sesión. Ni la caducidad, ni un archivo dañado, ni un respaldo,
   ni recuperar la red pueden dar por buena una operación incierta.
+- E10 (Forms nativo):
+  * S1, recuperar la sesión propia: si el dueño perdió su id con el motor en marcha, un registro nuevo con la MISMA
+    credencial sustituye la sesión anterior solo si esta lleva en silencio al menos su ``heartbeat_timeout_s``
+    (``replaced_by_owner``). Mientras la anterior siga latiendo, 409 ``credential_has_session`` con ``retry_after_s``:
+    una segunda instancia nunca desplaza una sesión viva. La nueva hereda la marca, y una operación que estaba en curso
+    pasa a ``requires_human`` (``owner_replaced_during_operation``).
+  * S2, resolver solo lo que se puede resolver: si la condición que creó la marca sigue presente (el dueño sigue
+    informando una operación en curso con la sesión interrumpida, o declara revisiones locales pendientes), ``resolve``
+    responde 409 ``condition_persists`` y la marca NO se toca.
+  * S3, el dueño conoce las revisiones administrativas de sus sesiones (``reviews_for``): cada resolución se anota con
+    ``confirms_receipt: false``. Es una revisión de CONECTIVIDAD/estado, nunca un acuse: el dueño no debe dar por
+    recibida ni desbloquear una operación local por ella.
+  * El latido admite ``local_review`` (``none``/``pending``): el dueño declara que tiene operaciones locales con
+    resultado desconocido. Con ``pending`` la sesión pide revisión humana y ``resolve`` no la cierra.
 """
 from __future__ import annotations
 
@@ -51,12 +65,16 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from .audit import AuditLog
-from .session_store import SessionStore, clean_pending, clean_session, pending_id_for
+import hashlib
+
+from .session_store import ReviewStore, SessionStore, clean_pending, clean_session, pending_id_for
 
 # Estados globales de una sesión, de mayor a menor prioridad.
 STATES = ("stale", "network_down", "browser_error", "pending", "network_unknown", "network_degraded", "active")
 ERROR_CODES = ("page_unreachable", "navigation_timeout", "browser_closed", "session_expired", "network_error", "other")
-HEARTBEAT_FIELDS = {"status", "error_code", "operation"}
+HEARTBEAT_FIELDS = {"status", "error_code", "operation", "local_review"}
+LOCAL_REVIEW = ("none", "pending")       # E10: el dueño declara si tiene operaciones locales sin revisar
+MAX_REVIEWS = 200                        # E10 S3: resoluciones recordadas para que el dueño las consulte
 OPERATIONS = ("idle", "in_progress")      # el dueño dice si hay una operación (p. ej. un envío) a medio hacer
 INTERRUPTED = ("network_down", "stale", "browser_error")
 HUMAN_ERROR_CODES = ("session_expired",)  # hace falta que una persona vuelva a entrar
@@ -75,9 +93,10 @@ _LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,31}$")
 
 
 class SessionError(Exception):
-    def __init__(self, status: int, code: str, message: str):
+    def __init__(self, status: int, code: str, message: str, details: Optional[dict] = None):
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+        self.details = details
 
 
 @dataclass
@@ -104,6 +123,7 @@ class BrowserSession:
     requires_human: bool = False             # solo lo levanta el operador (resolve), nunca el dueño ni el motor
     human_reason: Optional[str] = None
     restored: bool = False                   # vuelve de un reinicio del motor y aún no ha latido desde entonces
+    local_review: Optional[str] = None       # E10: none | pending (lo último que declaró el dueño); None = no lo informa
 
 
 # Función que devuelve el estado de red de una conexión (o global si es None):
@@ -115,7 +135,8 @@ class SessionRegistry:
     def __init__(self, audit: AuditLog, network_state: NetworkStateFn,
                  connection_exists: Callable[[str], bool], max_sessions: int = 2,
                  default_timeout_s: float = 30.0, clock: Callable[[], float] = time.time,
-                 store: Optional[SessionStore] = None, restore_max_age_s: float = DEFAULT_RESTORE_MAX_AGE_S):
+                 store: Optional[SessionStore] = None, restore_max_age_s: float = DEFAULT_RESTORE_MAX_AGE_S,
+                 review_store: Optional[ReviewStore] = None):
         if not (1 <= max_sessions <= HARD_MAX_SESSIONS):
             raise ValueError(f"sessions.max debe estar entre 1 y {HARD_MAX_SESSIONS}")
         self.audit = audit
@@ -136,6 +157,12 @@ class SessionRegistry:
         self._dirty = False
         self._write_failed = False
         self._seq = 0                      # número de la última foto tomada para guardar (E7)
+        # E10 S3: resoluciones administrativas (archivo aparte: RC3 no lo lee, así volver a RC3 no daña su estado)
+        self.review_store = review_store
+        self._reviews: deque = deque(maxlen=MAX_REVIEWS)
+        if review_store is not None:
+            for r in review_store.load():
+                self._reviews.append(r)
         if store is not None:
             self._restore()
 
@@ -282,10 +309,23 @@ class SessionRegistry:
         if not (5.0 <= timeout <= 300.0):
             raise SessionError(400, "invalid_request", "heartbeat_timeout_s debe estar entre 5 y 300")
         now = self.clock()
-        inherited, replaced = None, None
+        inherited, replaced, replace_reason, silent_s = None, None, None, None
         with self._lock:
             prev = next((x for x in self._sessions.values() if x.owner_token_id == owner_token_id), None)
             sustituible = prev is not None and prev.restored
+            if prev is not None and not prev.restored:
+                # E10 S1: el dueño perdió su id con el motor en marcha. Solo se sustituye una sesión SILENCIOSA: la
+                # que no ha latido en todo su plazo. Si sigue latiendo, es otra instancia viva y no se la desplaza.
+                ref = prev.last_heartbeat if prev.last_heartbeat is not None else prev.registered_at
+                silent_s = now - ref
+                if silent_s < prev.heartbeat_timeout_s:
+                    falta = round(prev.heartbeat_timeout_s - silent_s, 1)
+                    raise SessionError(409, "credential_has_session",
+                                       "Esta credencial ya tiene una sesión viva (una credencial = una sesión). Si es "
+                                       f"la suya y perdió el id, podrá recuperarla cuando lleve {prev.heartbeat_timeout_s:g} s "
+                                       f"sin latir (faltan {falta:g} s)",
+                                       details={"retry_after_s": falta, "silent_s": round(silent_s, 1)})
+                sustituible = True
             # E7: TODAS las comprobaciones van antes de tocar la sesión restaurada. Antes se borraba primero y un 409
             # posterior (p. ej. etiqueta en uso) se llevaba la sesión y su marca de intervención humana.
             otras = [x for x in self._sessions.values() if not (sustituible and x is prev)]
@@ -297,14 +337,19 @@ class SessionRegistry:
             if len(otras) >= self.max_sessions:
                 raise SessionError(409, "too_many_sessions", f"Máximo {self.max_sessions} sesiones")
             if sustituible:
-                # El dueño perdió su id al reiniciarse él también: la sesión restaurada se sustituye, pero su
-                # marca de intervención humana PASA a la nueva (un nuevo registro nunca la borra).
+                # El dueño perdió su id (al reiniciarse él también, o E10: con el motor en marcha y la sesión
+                # anterior ya en silencio): la sesión se sustituye, pero su marca de intervención humana PASA a la
+                # nueva (un nuevo registro nunca la borra).
+                replace_reason = "replaced_after_restart" if prev.restored else "replaced_by_owner"
                 del self._sessions[prev.id]
                 self._closed.appendleft({**self.view(prev), "state": "closed", "phase": "cerrada",
-                                         "reason": "replaced_after_restart", "closed_at": now})
+                                         "reason": replace_reason, "closed_at": now})
                 replaced = prev
                 if prev.requires_human:
                     inherited = (prev.human_reason, prev.operation)
+                elif prev.operation == "in_progress":
+                    # la instancia anterior calló con una operación a medias: su resultado es desconocido
+                    inherited = ("owner_replaced_during_operation", prev.operation)
             s = BrowserSession(id="bs_" + secrets.token_hex(6), label=label, owner_token_id=owner_token_id,
                                owner_name=owner_name, connection_id=cid, heartbeat_timeout_s=timeout,
                                registered_at=now, state_since=now)
@@ -323,9 +368,14 @@ class SessionRegistry:
                 pending_used = 0
             self._sessions[s.id] = s
         if replaced is not None:
+            cuando = "tras el reinicio" if replace_reason == "replaced_after_restart" else \
+                f"tras {silent_s:.0f} s sin latidos (el dueño perdió su id)"
             self.audit.record("session.replaced", f"Sesión {replaced.label}: sustituida por un nuevo registro de su dueño "
-                              "tras el reinicio", session_id=replaced.id, new_session_id=s.id,
-                              requires_human=replaced.requires_human)
+                              f"{cuando}", session_id=replaced.id, new_session_id=s.id,
+                              requires_human=replaced.requires_human or inherited is not None, reason=replace_reason)
+            if inherited is not None and not replaced.requires_human:
+                self.audit.record("session.requires_human", f"Sesión {label}: requiere revisión humana (la instancia "
+                                  "anterior dejó una operación en curso)", session_id=s.id, reason=inherited[0])
         self.audit.record("session.registered", f"Sesión de navegador registrada: {label}",
                           session_id=s.id, label=label, connection_id=cid, registered_by=owner_name)
         if pending_used:
@@ -360,6 +410,9 @@ class SessionRegistry:
         op = body.get("operation")
         if op is not None and op not in OPERATIONS:
             raise SessionError(400, "invalid_request", f"operation debe ser uno de: {', '.join(OPERATIONS)}")
+        lr = body.get("local_review")
+        if lr is not None and lr not in LOCAL_REVIEW:
+            raise SessionError(400, "invalid_request", f"local_review debe ser uno de: {', '.join(LOCAL_REVIEW)}")
         now = self.clock()
         with self._lock:
             s = self._owned(sid, token_id)
@@ -370,12 +423,15 @@ class SessionRegistry:
             op_changed = op is not None and op != s.operation
             if op is not None:
                 s.operation = op
+            lr_changed = lr is not None and lr != s.local_review
+            if lr is not None:
+                s.local_review = lr
             s.heartbeats += 1
             was_restored, s.restored = s.restored, False
             self._dirty = True
         self.evaluate()
         # un cambio de operación se guarda al momento: si el motor cae justo después, la marca «en curso» no se pierde
-        self._save(force=op_changed or was_restored)
+        self._save(force=op_changed or was_restored or lr_changed)
         return s
 
     def close(self, sid: str, token_id: str, admin: bool = False, reason: str = "cerrada por su dueño") -> dict:
@@ -391,18 +447,103 @@ class SessionRegistry:
         self._save()
         return {"closed": s.id}
 
-    def resolve(self, sid: str) -> BrowserSession:
-        """Una PERSONA (credencial admin, el operador) confirma que revisó la sesión. Nada se repite solo."""
+    def persisting_condition(self, s: BrowserSession) -> Optional[str]:
+        """E10 S2: la condición que exige a una persona SIGUE presente (resolver ahora no la cerraría)."""
+        if s.local_review == "pending":
+            return "owner_local_review_pending"
+        if s.state in INTERRUPTED and s.operation == "in_progress":
+            return "operation_still_reported_in_progress"
+        return None
+
+    def close_for_revoked_owner(self, token_id: str) -> list[str]:
+        """E10 (hallado en las jornadas): al revocar una credencial, su sesión se cierra (``credential_revoked``). Antes
+        quedaba viva hasta caducar (1 h): su etiqueta seguía ocupada y el puesto, con su credencial nueva, no podía
+        registrarse (409 label_in_use) ni latir (403). La marca de intervención NO se pierde: queda pendiente y la
+        hereda el siguiente registro con esa etiqueta."""
+        out = []
+        with self._lock:
+            for s in [x for x in self._sessions.values() if x.owner_token_id == token_id]:
+                if s.operation == "in_progress" and not s.requires_human:
+                    s.requires_human, s.human_reason = True, "credential_revoked_during_operation"
+                del self._sessions[s.id]
+                now = self.clock()
+                self._closed.appendleft({**self.view(s), "state": "closed", "phase": "cerrada",
+                                         "reason": "credential_revoked", "closed_at": now})
+                self._park(s, now)
+                out.append((s.id, s.label, s.requires_human))
+        for sid, label, rh in out:
+            self.audit.record("session.closed", f"Sesión de navegador cerrada: {label} (credencial revocada)",
+                              session_id=sid, label=label, requires_human=rh)
+        if out:
+            self._save()
+        return [x[0] for x in out]
+
+    def resolve(self, sid: str, body: Optional[dict] = None, resolved_by: str = "operator") -> BrowserSession:
+        """Una PERSONA (credencial admin, el operador) confirma que revisó la sesión. Nada se repite solo.
+
+        E10 S2: si la condición que creó la marca continúa, 409 ``condition_persists`` y la marca sigue: antes se quitaba y
+        reaparecía al instante (el operador veía «resuelto» y enseguida «pendiente»)."""
+        body = body or {}
+        note = body.get("note")
+        if note is not None and (not isinstance(note, str) or len(note) > 500):
+            raise SessionError(400, "invalid_request", "note: texto de como máximo 500 caracteres")
+        self.evaluate()
         with self._lock:
             s = self._owned(sid, "", admin=True)
+            cond = self.persisting_condition(s) if s.requires_human else None
+            if cond is not None:
+                texto = {"owner_local_review_pending":
+                         "El puesto informa operaciones locales con resultado desconocido: revíselas en el puesto "
+                         "(Forms: «operaciones revisar»). Resolver aquí no confirma que el portal las recibiera",
+                         "operation_still_reported_in_progress":
+                         "El dueño sigue informando una operación en curso con la sesión interrumpida: espere a que "
+                         "informe el resultado o cierre la sesión (la marca pasará a pendiente)"}[cond]
+                raise SessionError(409, "condition_persists", "La revisión no puede darse por concluida: " + texto,
+                                   details={"condition": cond, "requires_human": True, "human_reason": s.human_reason})
             was, s.requires_human, s.human_reason = s.human_reason, False, None
             # La persona revisó la situación: las marcas generales (estado ilegible o del respaldo) quedan atendidas.
             general = [p for p in self._pending if p["owner_token_id"] is None and p["label"] is None]
             self._pending = [p for p in self._pending if p not in general]
+            if was is not None:
+                self._add_review("session_resolve", s.owner_token_id, s.label, s.id, None, was, resolved_by, note)
         self.audit.record("session.human_resolved", f"Sesión {s.label}: revisada por el operador", session_id=s.id,
-                          reason=was, general_marks_cleared=len(general))
+                          reason=was, general_marks_cleared=len(general), confirms_receipt=False)
         self._save()
         return s
+
+    # --- E10 S3: revisiones administrativas visibles para el dueño ------------------
+    def _add_review(self, kind: str, owner: Optional[str], label: Optional[str], sid: Optional[str],
+                    pid: Optional[str], reason: Optional[str], by: str, note: Optional[str]) -> None:
+        """Llamar con el lock tomado. La nota NO se expone al dueño: solo su huella (queda entera en la auditoría)."""
+        r = {"id": "rv_" + secrets.token_hex(6), "kind": kind, "owner_token_id": owner, "label": label,
+             "session_id": sid, "pending_id": pid, "reason": reason, "resolved_at": self.clock(),
+             "resolved_by": str(by)[:40],
+             "note_sha256": hashlib.sha256(note.strip().encode("utf-8")).hexdigest()[:16] if note else None}
+        self._reviews.append(r)
+        if self.review_store is not None:
+            try:
+                self.review_store.save(list(self._reviews))
+            except OSError:
+                self.audit.record("session.reviews_write_failed", "No se pudo guardar el registro de revisiones "
+                                  "(sigue en memoria y en la auditoría)")
+
+    def reviews_for(self, sid: str, token_id: str) -> dict[str, Any]:
+        """Lo que el DUEÑO puede saber: qué marcas de su credencial o de su etiqueta resolvió un operador, cuándo y por
+        qué motivo. ``confirms_receipt`` es siempre False: es una revisión del estado, nunca un acuse del portal."""
+        with self._lock:
+            s = self._owned(sid, token_id)
+            now = self.clock()
+            mine = [r for r in self._reviews if r["owner_token_id"] == token_id or (r["label"] and r["label"] == s.label)]
+            return {"session_id": s.id, "label": s.label, "requires_human": s.requires_human,
+                    "reviews": [{"id": r["id"], "kind": r["kind"], "session_id": r["session_id"],
+                                 "pending_id": r["pending_id"], "reason": r["reason"],
+                                 "age_s": round(max(0.0, now - r["resolved_at"]), 1),
+                                 "resolved_by_scope": "review" if r["kind"] == "pending_resolve" else "admin",
+                                 "note_sha256": r["note_sha256"],
+                                 "confirms_receipt": False, "evidence": "none",
+                                 "meaning": "network_or_session_review"} for r in list(mine)[-20:]][::-1],
+                    "notice": "Una revisión administrativa NO confirma que una operación se recibiera: una operación "
+                              "local incierta solo se cierra con un acuse verificable o con la revisión del puesto."}
 
     # --- E7: marcas pendientes sin sesión activa -----------------------------------
     def pending_view(self, p: dict) -> dict[str, Any]:
@@ -435,12 +576,14 @@ class SessionRegistry:
                 raise SessionError(409, "confirmation_mismatch",
                                    f"Para confirmar escribe exactamente: {v['confirm_with']}")
             self._pending = [x for x in self._pending if x is not p]
+            self._add_review("pending_resolve", p["owner_token_id"], p["label"], p["session_id"], pid, p["reason"],
+                             resolved_by, note)
         self.audit.record("session.pending_resolved",
                           f"Marca pendiente {pid} ({v['label'] or 'general'}): revisada por el operador",
                           pending_id=pid, label=v["label"], session_id=v["session_id"], reason=v["reason"],
                           note=note.strip(), resolved_by=resolved_by)
         self._save(force=True)
-        return {"resolved": pid, "reason": v["reason"], "label": v["label"]}
+        return {"resolved": pid, "reason": v["reason"], "label": v["label"], "confirms_receipt": False}
 
     def get(self, sid: str, token_id: str, admin: bool = False) -> BrowserSession:
         with self._lock:
@@ -517,6 +660,10 @@ class SessionRegistry:
                 if s.state in INTERRUPTED and s.operation == "in_progress" and not s.requires_human:
                     s.requires_human, s.human_reason = True, "operation_interrupted"
                     flagged.append((s.id, s.label, s.human_reason))
+                # E10: el dueño declara operaciones locales sin revisar (p. ej. Forms con una «incierta»)
+                if s.local_review == "pending" and not s.requires_human:
+                    s.requires_human, s.human_reason = True, "owner_local_review_pending"
+                    flagged.append((s.id, s.label, s.human_reason))
         for sid, label, old, new, reason in changes:
             self.audit.record("session.state", f"Sesión {label}: {old} -> {new}",
                               session_id=sid, old=old, new=new, reason=reason)
@@ -556,6 +703,7 @@ class SessionRegistry:
             "requires_human": s.requires_human,
             "human_reason": s.human_reason,
             "restored": s.restored,
+            "local_review": s.local_review,          # E10: lo que declara el dueño (none|pending|null)
             "recovered": ({"from": s.recovered_from, "age_s": round(now - s.recovered_at, 1)}
                           if s.recovered_at is not None and now - s.recovered_at <= RECOVERED_WINDOW_S else None),
         }
