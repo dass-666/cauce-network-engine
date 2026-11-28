@@ -369,7 +369,10 @@ def auditoria(JL, lab) -> dict:
             "estado_inicial": op.get("estado"), "motivo": op.get("motivo"), "resolve_http": resuelto,
             "estado_tras_resolver_en_ne": tras.get("estado"), "revision": tras.get("revision"),
             "reenvio_http": s2, "reenvio_estado": ((r2 or {}).get("operacion") or {}).get("estado"),
-            "duplicados_en_portal_antes": stp0["duplicados"], "duplicados_en_portal_despues": stp1["duplicados"]}
+            "duplicados_en_portal_antes": stp0["duplicados"], "duplicados_en_portal_despues": stp1["duplicados"],
+            "recibidos_en_portal_por_el_reenvio": stp1["recibidos"] - stp0["recibidos"],
+            "tramites_del_mismo_expediente_en_portal": sum(1 for x in lab.recibidos_e10()
+                                                           if x["campos"].get("expediente") == filas[i]["expediente"])}
     JL.http("POST", lab.pu + "/_lab/e10/modo", {"sin_token": False})
     # D1: Chromium reintenta por su cuenta un POST cortado; con el portal sin token es un duplicado
     filas = JL.filas_ficticias(91000, 1)
@@ -390,6 +393,58 @@ def auditoria(JL, lab) -> dict:
     return out
 
 
+def capturas(JL, lab, carpeta: Path) -> dict:
+    """Capturas (Chromium sin ventana, 2x) del centro de revisiones del Monitor y de Forms con una incierta. SIMULADO."""
+    from playwright.sync_api import sync_playwright
+    carpeta.mkdir(parents=True, exist_ok=True)
+    filas = JL.filas_ficticias(95000, 1)
+    lab.cargar_datos(filas)
+    lab.rellenar(lab.analizar(), 0)
+    lab.portal_api("POST", "/_lab/fallo", {"tipo": "cortar_despues", "veces": 1})
+    lab.portal_api("POST", "/_lab/fallo", {"tipo": "acuse_lento", "segundos": 25})
+    st, r = lab.enviar()
+    lab.portal_api("POST", "/_lab/limpiar_fallos", {})
+    time.sleep(10)
+    hechas = []
+    ruta = os.environ.get("CAUCE_BROWSER_PATH")
+    with sync_playwright() as p:
+        b = p.chromium.launch(executable_path=ruta) if ruta else p.chromium.launch()
+        pg = b.new_page(viewport={"width": 1366, "height": 900}, device_scale_factor=2)
+
+        def foto(nombre: str) -> None:
+            pg.wait_for_timeout(2500)
+            pg.screenshot(path=str(carpeta / nombre), full_page=True)
+            hechas.append(nombre)
+
+        pg.goto(f"http://127.0.0.1:{lab.p_monitor}/")
+        pg.fill("input[name=username]", "admin")
+        pg.fill("input[name=password]", lab.mon_pwd)
+        pg.press("input[name=password]", "Enter")
+        pg.wait_for_timeout(2000)
+        pg.goto(f"http://127.0.0.1:{lab.p_monitor}/#red")
+        foto("01_monitor_red_con_incierta_de_forms.png")
+        pg.goto(lab.fu + "/")
+        foto("02_forms_con_operacion_incierta.png")
+        sid = lab.diag().get("sesion_id")
+        res = None
+        for _ in range(10):
+            res = lab.ne_api("POST", f"/sessions/{sid}/resolve", {"note": "revisión de RED (captura de laboratorio)"})[0]
+            if res == 200:
+                break
+            time.sleep(3)
+        time.sleep(10)
+        pg.goto(f"http://127.0.0.1:{lab.p_monitor}/#red")
+        pg.reload()
+        foto("03_monitor_red_tras_resolver_en_ne.png")
+        pg.goto(lab.fu + "/")
+        foto("04_forms_tras_resolver_en_ne.png")
+        b.close()
+    return {"carpeta": str(carpeta), "capturas": hechas, "envio_http": st,
+            "estado_inicial": ((r or {}).get("operacion") or {}).get("estado"), "resolve_http": res,
+            "estado_tras_resolver": [o["estado"] for o in lab.operaciones()][:3],
+            "nota": "SIMULADO: portal propio, datos ficticios, red simulada."}
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--forms", required=True)
@@ -398,6 +453,7 @@ def main(argv=None) -> int:
     ap.add_argument("--expedientes", type=int, nargs="*", default=[6, 10, 20, 50])
     ap.add_argument("--duracion-min", type=float, default=0)
     ap.add_argument("--auditoria", action="store_true")
+    ap.add_argument("--capturas", default="")
     ap.add_argument("--salida", required=True)
     a = ap.parse_args(argv)
     forms, salida = Path(a.forms).resolve(), Path(a.salida).resolve()
@@ -413,7 +469,9 @@ def main(argv=None) -> int:
     lab.iniciar()
     med.start()
     try:
-        if a.auditoria:
+        if a.capturas:
+            aud = capturas(JL, lab, Path(a.capturas).resolve())
+        elif a.auditoria:
             aud = auditoria(JL, lab)
         elif a.duracion_min:
             k = 0
@@ -439,7 +497,7 @@ def main(argv=None) -> int:
            "tiempos": JL.resumen_tiempos(lab.tiempos), "eventos": lab.eventos[-200:],
            "nota": "SIMULADO: red simulada del motor, portal propio en 127.0.0.1, datos ficticios y confirmación humana "
                    "simulada por el guion. No es una prueba física."}
-    (salida / ("auditoria.json" if a.auditoria else "jornadas.json")).write_text(json.dumps(out, ensure_ascii=False, indent=1), "utf-8")
+    (salida / ("capturas.json" if a.capturas else "auditoria.json" if a.auditoria else "jornadas.json")).write_text(json.dumps(out, ensure_ascii=False, indent=1), "utf-8")
     (salida / "muestras.json").write_text(json.dumps(med.muestras), "utf-8")
     for j in jornadas:
         c = j["comprobaciones"]

@@ -75,3 +75,44 @@ justo antes; una credencial `session` no puede resolver la marca (403).
 - Llamar a esto desde Forms, en su repositorio y con su revisión.
 - Elegir dónde se muestra «revisar a mano» en su interfaz.
 - Decidir si Forms recuerda el id de sesión entre reinicios. Es opcional: la regla 4 cubre el caso.
+
+## E10: cambios del contrato para Forms nativo (rama `claude/e10-forms-nativo`, laboratorio)
+
+Estos cambios son del laboratorio E10. RC2 y RC3 no los tienen. Todo lo anterior sigue valiendo.
+
+### S1. Recuperar la sesión propia cuando Forms pierde su id
+- `POST /sessions` con la MISMA credencial que ya tiene una sesión:
+  - si la anterior sigue latiendo (silencio < `heartbeat_timeout_s`): **409 `credential_has_session`** con
+    `error.details = {"retry_after_s": N, "silent_s": S}`. Nada se desplaza. Forms espera `retry_after_s` y reintenta;
+  - si la anterior ya calló: la nueva la sustituye (`session.replaced`, motivo `replaced_by_owner`). La nueva
+    **hereda** `requires_human` de la anterior; si la anterior tenía una operación «en curso», la nueva nace con
+    `requires_human` y motivo `owner_replaced_during_operation`. No se inventa una marca si no la había.
+- Otra credencial nunca sustituye una sesión ajena (sigue el 409 de siempre).
+- Con seis registros simultáneos de la misma credencial gana exactamente uno (prueba de concurrencia).
+
+### S2. La marca que reaparecía tras resolverla
+- `POST /sessions/{id}/resolve` (admin) acepta `{"note": "..."}` (≤ 500 caracteres; en la auditoría queda entera y al
+  dueño solo le llega su huella).
+- Si la condición que creó la marca **continúa**, responde **409 `condition_persists`** con
+  `error.details.condition` = `owner_local_review_pending` o `operation_still_reported_in_progress`, y la marca no se
+  toca. Antes se quitaba y volvía al instante. Ninguna protección se debilita: solo se dice por qué no puede cerrarse.
+
+### S3. Forms puede saber qué revisó el administrador
+- Latido con el campo opcional `local_review`: `"none"` o `"pending"`. `"pending"` significa «tengo operaciones
+  locales con resultado desconocido». Mientras sea `"pending"`, la sesión lleva `requires_human`
+  (`owner_local_review_pending`) y el resolve responde `condition_persists`.
+- `GET /sessions/{id}/reviews` (credencial dueña, `session`): las últimas 20 revisiones de marcas de esa credencial o
+  etiqueta. Cada una trae `confirms_receipt: false`, `evidence: "none"` y `meaning: "network_or_session_review"`.
+  **Una revisión administrativa NO es un acuse**: Forms no debe pasar ninguna operación incierta a otro estado por
+  ella. Solo un acuse verificable del portal o la revisión en el propio puesto cierran una operación incierta.
+- Las revisiones se guardan aparte (`sessions_reviews.json` + `.bak`, con sha256), así que volver a RC3 no rompe el
+  estado. Un archivo dañado se descarta sin tumbar el motor.
+
+### Revocar una credencial cierra su sesión
+- Al revocar, la sesión de esa credencial se cierra (`credential_revoked`). Si tenía una operación «en curso», queda
+  una marca **pendiente** `credential_revoked_during_operation` que solo un operador resuelve. Antes la sesión seguía
+  viva una hora y la credencial nueva recibía 403 `not_session_owner`.
+
+### Qué demuestran las pruebas
+`tests/test_e10_forms_nativo.py` (20 pruebas) y `tests/test_e10_instalador.py` (5). Son pruebas con el motor real y
+reloj simulado. No son pruebas físicas.
