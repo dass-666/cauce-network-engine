@@ -106,12 +106,19 @@ jobs:
           call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\DETENER_RC3.cmd" --forzar
           call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e3\ne-src\scripts\laboratorio_integrado\4_DETENER.cmd"
           exit /b 0
+      - name: Reunir evidencias en el espacio de trabajo (upload-artifact exige una raíz común)
+        if: always()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:GITHUB_WORKSPACE "evidencias-candidatas"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          foreach ($p in @("$env:USERPROFILE\cauce-lab-rc3\informes", "$env:USERPROFILE\cauce-lab-integrado\informes")) {
+            if (Test-Path $p) { Copy-Item -Recurse -Force $p (Join-Path $dst ((Split-Path (Split-Path $p -Parent) -Leaf))) }
+          }
+          Copy-Item -Force "$env:USERPROFILE\cauce-lab-rc3\instalacion_rc3.json" $dst -ErrorAction SilentlyContinue
+          Copy-Item -Force (Join-Path $env:RUNNER_TEMP "rc2_*.txt") $dst -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: candidatas-windows
-          path: |
-            ~/cauce-lab-rc3/informes/
-            ~/cauce-lab-rc3/instalacion_rc3.json
-            ~/cauce-lab-integrado/informes/
-            ${{ runner.temp }}/rc2_*.txt
+          path: evidencias-candidatas/
