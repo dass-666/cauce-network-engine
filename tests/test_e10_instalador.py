@@ -62,6 +62,18 @@ class InstaladorE10Test(unittest.TestCase):
         aparte = [x for x in (self.d / "lab").iterdir() if x.name.startswith("datos.antes-de-restaurar-")]
         self.assertEqual(len(aparte), 1, "lo actual se aparta, nunca se borra")
 
+    def test_el_navegador_no_viaja_en_el_respaldo_y_se_conserva_al_restaurar(self):
+        dd = self._datos()
+        nav = dd / e10.NAVEGADORES / "chromium-1" / "chrome.exe"
+        nav.parent.mkdir(parents=True)
+        nav.write_bytes(b"x" * 1024)
+        z = e10.respaldar(silencioso=True)
+        import zipfile
+        with zipfile.ZipFile(z) as zf:
+            self.assertFalse([n for n in zf.namelist() if n.startswith(e10.NAVEGADORES)])
+        self.assertEqual(e10.restaurar(z), 0)
+        self.assertTrue(nav.exists(), "las jornadas usan datos/ms-playwright: debe seguir tras restaurar")
+
     def test_restaurar_exige_huella_correcta(self):
         self._datos()
         z = Path(e10.respaldar(silencioso=True))

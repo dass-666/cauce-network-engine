@@ -206,13 +206,17 @@ def jornadas(ns: list[int], duracion_min: float, auditoria: bool) -> int:
         return 2
     subprocess.call([str(py_f), "-m", "pip", "install", "-q", "--disable-pip-version-check", "psutil"])   # solo medir
     salida = lab / "informes" / f"jornadas-{time.strftime('%Y%m%d-%H%M%S')}"
-    env = dict(os.environ, PLAYWRIGHT_BROWSERS_PATH=str(lab / ".browsers"), PYTHONIOENCODING="utf-8")
+    # los navegadores que instaló INSTALAR_E10 (lab.py: datos/ms-playwright), no una carpeta nueva
+    env = dict(os.environ, PLAYWRIGHT_BROWSERS_PATH=str(lab / "datos" / NAVEGADORES), PYTHONIOENCODING="utf-8")
     args = [str(py_f), str(AQUI / "jornada_e10.py"), "--forms", str(lab / "forms"), "--monitor", str(lab / "monitor"),
             "--monitor-python", str(py_m), "--salida", str(salida)]
     args += ["--auditoria"] if auditoria else (["--duracion-min", str(duracion_min)] if duracion_min else
                                               ["--expedientes", *map(str, ns)])
     decir(f"Jornadas SIMULADAS E10 → {salida}")
     return subprocess.call(args, cwd=str(AQUI), env=env)
+
+
+NAVEGADORES = "ms-playwright"                    # como lab.py (Laboratorio.navegadores)
 
 
 def respaldar(silencioso: bool = False) -> str:
@@ -225,7 +229,8 @@ def respaldar(silencioso: bool = False) -> str:
     z = respaldos() / f"datos-e10-{time.strftime('%Y%m%d-%H%M%S')}.zip"
     with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in sorted(datos.rglob("*")):
-            if f.is_file():
+            # el navegador (datos/ms-playwright) no es un dato: se reinstala y pesa cientos de MB
+            if f.is_file() and f.relative_to(datos).parts[0] != NAVEGADORES:
                 zf.write(f, f.relative_to(datos).as_posix())
     (z.with_suffix(".zip.sha256")).write_text(f"{_sha(z)}  {z.name}\n", "utf-8")
     if not silencioso:
@@ -267,6 +272,9 @@ def restaurar(zpath: str) -> int:
         if bak.exists():
             bak.unlink()
         ses.rename(bak)
+    # 3) El navegador instalado se queda (no viaja en los respaldos)
+    if (datos / NAVEGADORES).exists() and not (tmp / NAVEGADORES).exists():
+        shutil.move(str(datos / NAVEGADORES), str(tmp / NAVEGADORES))
     if datos.exists():
         datos.rename(aparte)
     tmp.rename(datos)
