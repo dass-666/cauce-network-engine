@@ -1,0 +1,117 @@
+name: candidatas-windows
+# E8b · RC2 y RC3 en el MISMO Windows, como en la MSI, con datos ficticios y red SIMULADA (no es validación física):
+# RC2 se instala y valida con SU propio lanzador (6e2cceb); RC3 se instala aparte con INSTALAR_RC3.cmd; se comprueba que
+# RC3 no cambia ni un archivo de RC2, que no corren a la vez, que la credencial «review» solo existe en el laboratorio RC3,
+# que RC2 sigue funcionando después y se genera la comparación RC2 frente a RC3 con el mismo perfil.
+on:
+  push:
+    branches: ["claude/e8b-*"]
+  workflow_dispatch:
+jobs:
+  dos-candidatas:
+    name: RC2 intacta + RC3 independiente · Windows
+    runs-on: windows-latest
+    timeout-minutes: 100
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Clones como en la MSI (RC2 en 6e2cceb; RC3 en este commit), cada uno en su carpeta
+        shell: pwsh
+        run: |
+          $base = Join-Path $env:USERPROFILE "Cauce-AI-Center"
+          git clone -q https://github.com/${{ github.repository }}.git "$base\cauce-lab-e3\ne-src"
+          git -C "$base\cauce-lab-e3\ne-src" checkout -q --detach 6e2cceb02117cbea644351f7d7ee6f179a203ab7
+          git clone -q https://github.com/${{ github.repository }}.git "$base\cauce-lab-rc3\ne-src"
+          git -C "$base\cauce-lab-rc3\ne-src" fetch -q origin ${{ github.sha }}
+          git -C "$base\cauce-lab-rc3\ne-src" checkout -q --detach ${{ github.sha }}
+          git -C "$base\cauce-lab-e3\ne-src" log -1 --format=%H
+          git -C "$base\cauce-lab-rc3\ne-src" log -1 --format=%H
+      - name: RC2 — su propio 7_VALIDACION_INTEGRAL.cmd rapido (instala su laboratorio)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e3\ne-src\scripts\laboratorio_integrado\7_VALIDACION_INTEGRAL.cmd" rapido --no-interactivo --duracion 120
+      - name: RC2 — su propio 4_DETENER.cmd (las dos candidatas nunca corren a la vez)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e3\ne-src\scripts\laboratorio_integrado\4_DETENER.cmd"
+      - name: Huella completa de RC2 (clon + laboratorio) ANTES de RC3
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "rc2_antes.txt"
+          foreach ($d in "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-e3", "$env:USERPROFILE\cauce-lab-integrado") {
+            Get-ChildItem -Recurse -File -Force $d | Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Sort-Object FullName | ForEach-Object { "{0} {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash, $_.FullName } |
+              Out-File -Append -Encoding utf8 $out
+          }
+          (Get-Content $out).Count
+      - name: COMPROBAR_CANDIDATAS.cmd (solo lee)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\COMPROBAR_CANDIDATAS.cmd" --esperado ${{ github.sha }}
+      - name: INSTALAR_RC3.cmd con un commit EQUIVOCADO se niega
+        shell: cmd
+        run: |
+          call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\INSTALAR_RC3.cmd" 6e2cceb
+          if not errorlevel 1 (echo Debio negarse & exit /b 1)
+          if exist "%USERPROFILE%\cauce-lab-rc3\.cauce-lab" (echo No debio crear nada & exit /b 1)
+          exit /b 0
+      - name: INSTALAR_RC3.cmd (carpeta propia, puertos +100)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\INSTALAR_RC3.cmd" ${{ github.sha }}
+      - name: RC3 en marcha — credencial review solo del laboratorio y RC2 no puede arrancar a la vez
+        shell: pwsh
+        run: |
+          $ne = "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-rc3\ne-src"
+          $env:CAUCE_LAB_DESPLAZAMIENTO_PUERTOS = "100"
+          Push-Location "$ne\scripts\laboratorio_integrado"
+          python lab.py --dir "$env:USERPROFILE\cauce-lab-rc3" iniciar --no-abrir
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Pop-Location
+          python "$ne\scripts\candidatas\ci_comprobar_review.py" "$env:USERPROFILE\cauce-lab-rc3"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Remove-Item Env:\CAUCE_LAB_DESPLAZAMIENTO_PUERTOS
+          cmd /c "$ne\scripts\candidatas\VALIDAR_RC2.cmd" rapido --no-interactivo
+          if ($LASTEXITCODE -ne 2) { Write-Output "VALIDAR_RC2 debio negarse con RC3 en marcha (codigo $LASTEXITCODE)"; exit 1 }
+          cmd /c "$ne\scripts\candidatas\DETENER_RC3.cmd"
+          exit 0
+      - name: VALIDAR_RC3.cmd rapido
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\VALIDAR_RC3.cmd" rapido --no-interactivo --duracion 120
+      - name: DETENER_RC3.cmd
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\DETENER_RC3.cmd"
+      - name: RC2 sin un solo archivo cambiado tras instalar y validar RC3
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "rc2_despues.txt"
+          foreach ($d in "$env:USERPROFILE\Cauce-AI-Center\cauce-lab-e3", "$env:USERPROFILE\cauce-lab-integrado") {
+            Get-ChildItem -Recurse -File -Force $d | Where-Object { $_.FullName -notmatch '\\\.git\\' } |
+              Sort-Object FullName | ForEach-Object { "{0} {1}" -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash, $_.FullName } |
+              Out-File -Append -Encoding utf8 $out
+          }
+          $dif = Compare-Object (Get-Content (Join-Path $env:RUNNER_TEMP "rc2_antes.txt")) (Get-Content $out)
+          if ($dif) { $dif | Format-Table -AutoSize | Out-String -Width 400; exit 1 }
+          Write-Output "RC2 intacta: $((Get-Content $out).Count) archivos con el mismo SHA-256"
+      - name: VALIDAR_RC2.cmd rapido (RC2 sigue funcionando después de RC3)
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\VALIDAR_RC2.cmd" rapido --no-interactivo --duracion 120
+      - name: COMPARAR_RC2_RC3.cmd
+        if: always()
+        shell: cmd
+        run: call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\COMPARAR_RC2_RC3.cmd"
+      - name: Detener todo
+        if: always()
+        shell: cmd
+        run: |
+          call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-rc3\ne-src\scripts\candidatas\DETENER_RC3.cmd" --forzar
+          call "%USERPROFILE%\Cauce-AI-Center\cauce-lab-e3\ne-src\scripts\laboratorio_integrado\4_DETENER.cmd"
+          exit /b 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: candidatas-windows
+          path: |
+            ~/cauce-lab-rc3/informes/
+            ~/cauce-lab-rc3/instalacion_rc3.json
+            ~/cauce-lab-integrado/informes/
+            ${{ runner.temp }}/rc2_*.txt
