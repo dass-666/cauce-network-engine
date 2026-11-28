@@ -267,6 +267,16 @@ def limpiar_sobrantes_del_laboratorio(ne) -> dict:
     return out
 
 
+# E8b: nombre de la credencial «review» del laboratorio. NO empieza por PREFIJOS_DEL_LABORATORIO: la limpieza de
+# sobrantes no debe revocarla en cada validación (Monitor la usa mientras el laboratorio esté en marcha).
+NOMBRE_CREDENCIAL_REVIEW = "monitor-lab-revisiones"
+
+
+def _validar_dentro_del_laboratorio(d: Path, archivo: Path) -> None:
+    if not _dentro(Path(archivo).resolve(), Path(d).resolve()) or not (Path(d) / MARCA).exists():
+        raise ValueError(f"la credencial solo se guarda dentro de un laboratorio marcado con {MARCA}: {archivo}")
+
+
 def etiqueta_unica(prefijo: str) -> str:
     return f"{prefijo}-{int(time.time())}"
 
@@ -572,6 +582,17 @@ class Lab:
         from cauce.secrets_store import read_secret
         return read_secret(str(f))
 
+    def crear_credencial(self, archivo: Path, nombre: str, ambito: str) -> bool:
+        """Credencial de Network Engine para Monitor, creada con la orden oficial y guardada protegida (DPAPI en
+        Windows) dentro de la carpeta del laboratorio. Nunca admin: la API no crea credenciales admin."""
+        if ambito not in ("read", "review"):
+            raise ValueError(f"ámbito no permitido para Monitor: {ambito}")
+        _validar_dentro_del_laboratorio(self.d, archivo)
+        r = subprocess.run([sys.executable, "-m", "cauce", "--config", str(self.datos("network-engine", "config.json")),
+                            "token", "create", "--name", nombre, "--scope", ambito, "--out", str(archivo)],
+                           cwd=str(self.ne), capture_output=True, text=True, env=entorno_limpio({}))
+        return r.returncode == 0 and archivo.exists()
+
     def iniciar_ne(self) -> bool:
         modo = self.estado.get("modo", "simulado")
         cfg = self.datos("network-engine", "config.json")
@@ -589,6 +610,9 @@ class Lab:
                                 "MONITOREO_NETWORK_PUERTO": str(self.p["network_engine"]),
                                 # la pantalla Red de Monitor resume la última validación integral (solo cifras)
                                 "MONITOREO_RESULTADOS_VALIDACION": str(self.d / "informes")})
+        revisiones = self.datos("monitor-revisiones.token")
+        if revisiones.exists():               # E8b: solo laboratorio; sin el archivo, el centro de revisiones solo muestra
+            env_m["MONITOREO_NETWORK_REVISIONES_TOKEN_FILE"] = str(revisiones)
         self._lanzar("monitor", [self.py("monitor"), "-m", "monitoreo"], self.monitor, env_m)
         return self._esperar_puerto(self.p["monitor"], 90)
 
@@ -627,10 +651,12 @@ class Lab:
         det["network_engine"] = self.iniciar_ne()
         token = self.datos("monitor.token")
         if det["network_engine"] and not token.exists():
-            r = subprocess.run([sys.executable, "-m", "cauce", "--config", str(self.datos("network-engine", "config.json")),
-                                "token", "create", "--name", "monitor-lab", "--out", str(token)],
-                               cwd=str(self.ne), capture_output=True, text=True, env=entorno_limpio({}))
-            det["credencial_read"] = r.returncode == 0
+            det["credencial_read"] = self.crear_credencial(token, "monitor-lab", "read")
+        # E8b · SOLO laboratorio: credencial de mínimo privilegio («review»: ver y resolver revisiones pendientes;
+        # no lee el estado ni crea sesiones), en un archivo DISTINTO del de lectura, para el centro de revisiones.
+        revisiones = self.datos("monitor-revisiones.token")
+        if det["network_engine"] and not revisiones.exists():
+            det["credencial_review"] = self.crear_credencial(revisiones, NOMBRE_CREDENCIAL_REVIEW, "review")
         decir("  Monitor …")
         det["monitor"] = self.iniciar_monitor()
         if self.estado.get("forms", True) and self.forms.exists():
