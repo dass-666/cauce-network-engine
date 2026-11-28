@@ -56,7 +56,12 @@ def rc3_ne() -> Path:
 
 
 def decir(m: str) -> None:
-    print(m, flush=True)
+    """Nunca se cae por la consola: en Windows sin UTF-8 (cp1252) un carácter que no existe se sustituye."""
+    try:
+        print(m, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(m.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
 
 def _sha(f: Path):
@@ -212,7 +217,7 @@ def jornadas(ns: list[int], duracion_min: float, auditoria: bool) -> int:
             "--monitor-python", str(py_m), "--salida", str(salida)]
     args += ["--auditoria"] if auditoria else (["--duracion-min", str(duracion_min)] if duracion_min else
                                               ["--expedientes", *map(str, ns)])
-    decir(f"Jornadas SIMULADAS E10 → {salida}")
+    decir(f"Jornadas SIMULADAS E10 -> {salida}")
     return subprocess.call(args, cwd=str(AQUI), env=env)
 
 

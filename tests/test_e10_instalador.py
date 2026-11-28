@@ -74,6 +74,15 @@ class InstaladorE10Test(unittest.TestCase):
         self.assertEqual(e10.restaurar(z), 0)
         self.assertTrue(nav.exists(), "las jornadas usan datos/ms-playwright: debe seguir tras restaurar")
 
+    def test_decir_no_se_cae_en_una_consola_cp1252(self):
+        """La prolongada de Windows (run 46114592068) se cayó al imprimir «→» en una consola cp1252."""
+        import io
+        buf = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with mock.patch.object(sys, "stdout", buf):
+            e10.decir("Jornadas SIMULADAS E10 → carpeta · RC3 intacta: SÍ")
+            buf.flush()
+        self.assertIn(b"carpeta", buf.buffer.getvalue())
+
     def test_restaurar_exige_huella_correcta(self):
         self._datos()
         z = Path(e10.respaldar(silencioso=True))
