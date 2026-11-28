@@ -98,8 +98,9 @@ class CredencialTest(Base):
         with self.assertRaises(CauceAPIError) as cm:
             self.a.heartbeat(operation="idle")         # el «idle» no llega: credencial revocada
         self.assertEqual(cm.exception.status, 401)
-        v = self.admin._call("GET", f"/sessions/{sid}")
-        self.assertEqual(v["operation"], "in_progress")
+        # E10: revocar cierra la sesión (antes seguía viva 1 h ocupando la etiqueta); la marca NO se pierde: queda pendiente
+        pend = self.admin._call("GET", "/sessions/pending")["pending"]
+        self.assertTrue(any(p["session_id"] == sid and p["reason"] == "credential_revoked_during_operation" for p in pend), pend)
 
     def test_credenciales_malformadas(self):
         for hdr in ("Bearer ", "Bearer x", "Basic abc", "Bearer " + "A" * 5000, "Bearer cauce_zz_" + "0" * 40,

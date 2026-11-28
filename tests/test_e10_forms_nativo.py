@@ -144,7 +144,8 @@ class S1ApiTest(SessionApiBase):
         with self.assertRaises(CauceAPIError) as cm:
             CauceSessionClient(self.tok_a["token"], port=self.api.port).register("forms-a")
         self.assertEqual(cm.exception.status, 401)
-        self.assertEqual([s.id for s in self.eng.sessions.all()], [otra.session_id])
+        # E10: revocar cierra su sesión (sin operación en curso: no deja marca)
+        self.assertEqual(self.eng.sessions.all(), [])
 
 
 # --------------------------------------------------------------------------------------------------- S2
@@ -286,3 +287,25 @@ class S3ApiTest(SessionApiBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ------------------------------------------------------------------------- hallado en las jornadas E10: revocación
+class RevocacionCierraSesionTest(SessionApiBase):
+    def test_revocar_cierra_la_sesion_libera_la_etiqueta_y_conserva_la_marca(self):
+        self.a.register("forms-lab-jornada")
+        self.clock.advance(1)
+        self.a.heartbeat(True, operation="in_progress")           # revocada a mitad de una operación
+        out = self.admin.revoke_token(self.tok_a["id"])
+        self.assertEqual(out.get("sessions_closed"), 1)
+        self.assertEqual(self.eng.sessions.all(), [])
+        pend = self.eng.sessions.pending()
+        self.assertEqual([(p["label"], p["reason"]) for p in pend],
+                         [("forms-lab-jornada", "credential_revoked_during_operation")])
+        # el administrador crea una credencial NUEVA para el mismo puesto: registra con la misma etiqueta y hereda
+        nueva = self.admin.create_token("forms-a", "session")
+        c = CauceSessionClient(nueva["token"], port=self.api.port)
+        v = c.register("forms-lab-jornada")
+        self.assertEqual((v["requires_human"], v["human_reason"]), (True, "credential_revoked_during_operation"))
+        # el id antiguo ya no existe: 404 (no 403), así un cliente sabe que debe registrarse de nuevo
+        st, _ = self.raw("POST", f"/api/v1/sessions/{self.a.session_id}/heartbeat", nueva["token"], {"status": "ok"})
+        self.assertEqual(st, 404)

@@ -455,6 +455,29 @@ class SessionRegistry:
             return "operation_still_reported_in_progress"
         return None
 
+    def close_for_revoked_owner(self, token_id: str) -> list[str]:
+        """E10 (hallado en las jornadas): al revocar una credencial, su sesión se cierra (``credential_revoked``). Antes
+        quedaba viva hasta caducar (1 h): su etiqueta seguía ocupada y el puesto, con su credencial nueva, no podía
+        registrarse (409 label_in_use) ni latir (403). La marca de intervención NO se pierde: queda pendiente y la
+        hereda el siguiente registro con esa etiqueta."""
+        out = []
+        with self._lock:
+            for s in [x for x in self._sessions.values() if x.owner_token_id == token_id]:
+                if s.operation == "in_progress" and not s.requires_human:
+                    s.requires_human, s.human_reason = True, "credential_revoked_during_operation"
+                del self._sessions[s.id]
+                now = self.clock()
+                self._closed.appendleft({**self.view(s), "state": "closed", "phase": "cerrada",
+                                         "reason": "credential_revoked", "closed_at": now})
+                self._park(s, now)
+                out.append((s.id, s.label, s.requires_human))
+        for sid, label, rh in out:
+            self.audit.record("session.closed", f"Sesión de navegador cerrada: {label} (credencial revocada)",
+                              session_id=sid, label=label, requires_human=rh)
+        if out:
+            self._save()
+        return [x[0] for x in out]
+
     def resolve(self, sid: str, body: Optional[dict] = None, resolved_by: str = "operator") -> BrowserSession:
         """Una PERSONA (credencial admin, el operador) confirma que revisó la sesión. Nada se repite solo.
 

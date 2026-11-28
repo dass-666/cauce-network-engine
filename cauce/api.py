@@ -233,7 +233,9 @@ class CauceAPI:
                                    grant_id=m["tid"])
                 raise
             e.audit.record("token.revoked", f"Credencial revocada: {rec['name']}", grant_id=rec["id"], name=rec["name"])
-            return rec
+            # E10: su sesión de navegador (si la había) se cierra; la marca queda pendiente para su etiqueta
+            cerradas = e.sessions.close_for_revoked_owner(rec["id"])
+            return dict(rec, sessions_closed=len(cerradas)) if cerradas else rec
 
         @r("GET", P + "/diagnostics")
         def diag(req, m, q, body):
