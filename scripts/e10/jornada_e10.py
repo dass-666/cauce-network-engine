@@ -262,10 +262,16 @@ def jornada(JL, lab, n: int, desde: int, etiqueta: str) -> dict:
                 "post_vistos": lab.portal_api("GET", "/_lab/estadisticas")["peticiones_post"] - pp0}
         if estado == "incierta" and op:
             inciertas_vistas[op["id"]] = filas[i]["expediente"]
-            time.sleep(6)                                 # que el motor reciba la marca y Monitor la lea
-            fila["monitor"] = lab.revisiones_monitor()
-            monitor_vio.append(bool((fila["monitor"].get("revisiones_pendientes") or 0) > 0
-                                    or fila["monitor"].get("forms_requiere_persona")))
+            # Monitor lee Network Engine cada 10 s (INTERVALO_S): se espera hasta 30 s y se anota cuánto tardó.
+            # Antes se miraba una sola vez a los 6 s y una lectura atrasada contaba como «no lo vio».
+            t_ver, visto = time.time(), False
+            while not visto and time.time() - t_ver < 30:
+                time.sleep(2)
+                fila["monitor"] = lab.revisiones_monitor()
+                visto = bool((fila["monitor"].get("revisiones_pendientes") or 0) > 0
+                             or fila["monitor"].get("forms_requiere_persona"))
+            fila["monitor_tardo_s"] = round(time.time() - t_ver, 1) if visto else None
+            monitor_vio.append(visto)
             campos = lab.analizar()
             lab.rellenar(campos, i)
             s2, _ = lab.enviar()
