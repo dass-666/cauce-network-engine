@@ -2,9 +2,9 @@
 import shutil
 import subprocess
 import sys
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 RAIZ = Path(__file__).resolve().parent.parent
 RF = RAIZ / "scripts" / "recepcion_forms"
@@ -37,7 +37,7 @@ def _estados(out):
     return {x["id"]: x["estado"] for x in out["resultados"]}
 
 
-def test_integracion_correcta_es_apta(tmp_path):
+def _caso_integracion_correcta_es_apta(tmp_path):
     d, base = _repo(tmp_path, {
         "cauce_forms/red/client.py": RAIZ / "cauce" / "client.py",
         "cauce_forms/red/session_consumer.py": RAIZ / "cauce" / "session_consumer.py",
@@ -49,7 +49,7 @@ def test_integracion_correcta_es_apta(tmp_path):
     assert comprobar_forms.veredicto(out["resultados"]) == "APTO_PARA_PRUEBA_DINAMICA", out
 
 
-def test_reglas_rotas_se_detectan(tmp_path):
+def _caso_reglas_rotas_se_detectan(tmp_path):
     cliente_cambiado = (RAIZ / "cauce" / "client.py").read_text("utf-8") + "\n# retocado\n"
     d, base = _repo(tmp_path, {
         "cauce_forms/red/client.py": cliente_cambiado,
@@ -69,19 +69,47 @@ def test_reglas_rotas_se_detectan(tmp_path):
     assert e["portales.hosts"] == "REVISAR"
 
 
-def test_cambios_sin_guardar_no_apto(tmp_path):
+def _caso_cambios_sin_guardar_no_apto(tmp_path):
     d, base = _repo(tmp_path, {"x.py": "a = 1\n"})
     (d / "x.py").write_text("a = 2\n", "utf-8")
     assert _estados(comprobar_forms.comprobar(d, base))["git.limpio"] == "NO_APTO"
 
 
-@pytest.mark.parametrize("modo,esperado", [("correcto", 0), ("repite", 1)])
-def test_verificador_dinamico_distingue_si_forms_repite(tmp_path, modo, esperado):
+def _verificar(tmp_path, modo, esperado):
     r = subprocess.run([sys.executable, str(RF / "verificar_sesiones_forms.py"), "--puerto", "8997",
                         "--etiqueta", "forms-ventanilla-1", "--forms", str(RAIZ), "--salida", str(tmp_path / "out"),
                         "--reinicio-en-curso", "--cortes", "1", "--",
                         sys.executable, str(RF / "forms_ficticio.py"), modo, "forms-ventanilla-1"],
                        capture_output=True, text=True, timeout=240)
-    assert r.returncode == esperado, r.stdout + r.stderr
-    if modo == "repite":
-        assert "FALLA Forms NO volvió a poner la operación «en curso»" in r.stdout
+    return r
+
+
+class RecepcionFormsTest(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._d.name)
+
+    def tearDown(self):
+        self._d.cleanup()
+
+    def test_integracion_correcta_es_apta(self):
+        _caso_integracion_correcta_es_apta(self.tmp)
+
+    def test_reglas_rotas_se_detectan(self):
+        _caso_reglas_rotas_se_detectan(self.tmp)
+
+    def test_cambios_sin_guardar_no_apto(self):
+        _caso_cambios_sin_guardar_no_apto(self.tmp)
+
+    def test_verificador_acepta_forms_que_no_repite(self):
+        r = _verificar(self.tmp, "correcto", 0)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_verificador_detecta_forms_que_repite(self):
+        r = _verificar(self.tmp, "repite", 1)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("FALLA Forms NO volvió a poner la operación «en curso»", r.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
