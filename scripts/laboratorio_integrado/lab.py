@@ -34,7 +34,23 @@ from pathlib import Path
 
 AQUI = Path(__file__).resolve().parent
 NE_REPO = AQUI.parent.parent
-VERSIONES = json.loads((AQUI / "versiones.json").read_text("utf-8"))
+
+
+def _archivo_versiones() -> Path:
+    """E10: CAUCE_LAB_VERSIONES elige OTRA combinación (p. ej. scripts/e10/versiones_e10.json) sin tocar versiones.json,
+    que sigue fijando la combinación RC3. Solo se admiten archivos de este mismo paquete de Network Engine."""
+    alt = os.environ.get("CAUCE_LAB_VERSIONES")
+    if not alt:
+        return AQUI / "versiones.json"
+    f = Path(alt).resolve()
+    try:
+        f.relative_to((AQUI.parent).resolve())
+    except ValueError:
+        raise SystemExit(f"CAUCE_LAB_VERSIONES debe estar dentro de {AQUI.parent}: {f}")
+    return f
+
+
+VERSIONES = json.loads(_archivo_versiones().read_text("utf-8"))
 MARCA = ".cauce-lab"
 WINDOWS = os.name == "nt"
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))      # 127.0.0.1 nunca por un proxy
@@ -270,6 +286,8 @@ def limpiar_sobrantes_del_laboratorio(ne) -> dict:
 # E8b: nombre de la credencial «review» del laboratorio. NO empieza por PREFIJOS_DEL_LABORATORIO: la limpieza de
 # sobrantes no debe revocarla en cada validación (Monitor la usa mientras el laboratorio esté en marcha).
 NOMBRE_CREDENCIAL_REVIEW = "monitor-lab-revisiones"
+# E10: credencial «session» del puesto Forms NATIVO del laboratorio (no empieza por los prefijos que se limpian solos)
+NOMBRE_CREDENCIAL_FORMS = "forms-lab-puesto"
 
 
 def _validar_dentro_del_laboratorio(d: Path, archivo: Path) -> None:
@@ -278,7 +296,13 @@ def _validar_dentro_del_laboratorio(d: Path, archivo: Path) -> None:
 
 
 def etiqueta_unica(prefijo: str) -> str:
-    return f"{prefijo}-{int(time.time())}"
+    """E10: el instante en base 36 (6 caracteres). Antes eran 10 dígitos seguidos y Forms nativo rechaza, con razón,
+    etiquetas con «números largos» (podrían ser datos personales): el paso 09b nativo no arrancaba."""
+    n, b36 = int(time.time()), ""
+    while n:
+        n, r = divmod(n, 36)
+        b36 = "0123456789abcdefghijklmnopqrstuvwxyz"[r] + b36
+    return f"{prefijo}-{b36}"
 
 
 def entorno_limpio(extra: dict[str, str]) -> dict[str, str]:
@@ -585,8 +609,9 @@ class Lab:
     def crear_credencial(self, archivo: Path, nombre: str, ambito: str) -> bool:
         """Credencial de Network Engine para Monitor, creada con la orden oficial y guardada protegida (DPAPI en
         Windows) dentro de la carpeta del laboratorio. Nunca admin: la API no crea credenciales admin."""
-        if ambito not in ("read", "review"):
-            raise ValueError(f"ámbito no permitido para Monitor: {ambito}")
+        # E10: «session» SOLO para el puesto Forms nativo del laboratorio; nunca admin (la API no crea credenciales admin)
+        if ambito not in ("read", "review") and not (ambito == "session" and nombre == NOMBRE_CREDENCIAL_FORMS):
+            raise ValueError(f"ámbito no permitido: {ambito} para {nombre}")
         _validar_dentro_del_laboratorio(self.d, archivo)
         r = subprocess.run([sys.executable, "-m", "cauce", "--config", str(self.datos("network-engine", "config.json")),
                             "token", "create", "--name", nombre, "--scope", ambito, "--out", str(archivo)],
@@ -616,9 +641,27 @@ class Lab:
         self._lanzar("monitor", [self.py("monitor"), "-m", "monitoreo"], self.monitor, env_m)
         return self._esperar_puerto(self.p["monitor"], 90)
 
+    def forms_nativo(self) -> bool:
+        """E10: el Forms instalado trae la integración nativa con Network Engine (0.2.0rc1 o posterior)."""
+        return (self.forms / "cauce_form_connector" / "red" / "diagnostico.py").exists()
+
     def iniciar_forms(self) -> bool:
         env_f = entorno_limpio({"CAUCE_AUDIT_PATH": str(self.datos("forms", "audit.jsonl")),
                                 "CAUCE_PROFILES_DIR": str(self.datos("forms", "profiles", "x").parent)})
+        if self.forms_nativo():
+            # E10: Forms NATIVO latiendo a Network Engine con su PROPIA credencial «session» (nunca admin ni review),
+            # registro de operaciones y puesto dentro de la carpeta del laboratorio.
+            cred = self.datos("forms-session.token")
+            if not cred.exists():
+                self.crear_credencial(cred, NOMBRE_CREDENCIAL_FORMS, "session")
+            if cred.exists():
+                env_f.update({"CAUCE_NE_SESSION_TOKEN_FILE": str(cred), "CAUCE_NE_PORT": str(self.p["network_engine"]),
+                              "CAUCE_FORMS_DATA_DIR": str(self.datos("forms", "estado", "x").parent),
+                              "CAUCE_FORMS_PUESTO": NOMBRE_CREDENCIAL_FORMS})
+                if self.estado.get("modo", "simulado") == "simulado":
+                    env_f["CAUCE_NE_CONNECTION_ID"] = "sim-a"
+            self.estado["forms_nativo"] = cred.exists()
+            self.guardar()
         self._lanzar("forms", [self.py("forms"), "-m", "cauce_form_connector.web.app", "--port", str(self.p["forms"]),
                                "--no-open"], self.forms, env_f)
         return self._esperar_puerto(self.p["forms"], 60)
