@@ -1,0 +1,52 @@
+name: estabilidad-rc3
+# E9: estabilidad larga de RC3 EXACTA (f93dd58) en Windows, red SIMULADA, sin tráfico a terceros.
+# Este flujo vive en su propia rama y hace checkout del commit congelado: RC3 no cambia.
+# GitHub limita cada trabajo a 6 h: el «nocturno» se acorta a 5 h 40 min y el informe dice la duración real.
+on:
+  push:
+    branches: [claude/e9-estabilidad-rc3-windows]
+  workflow_dispatch:
+jobs:
+  largo:
+    name: RC3 nocturno · Windows (20400 s, red simulada)
+    runs-on: windows-latest
+    timeout-minutes: 358
+    env:
+      CAUCE_LAB_SIN_PAUSA: "1"
+      RC3: f93dd58eeddc1cc3032711bb0b6e378708063d41
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: f93dd58eeddc1cc3032711bb0b6e378708063d41
+      - name: Confirmar que el código es RC3
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$RC3" && git rev-parse HEAD^{tree}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Instalar el laboratorio (Monitor 7b92446 y Forms aa1bb02 fijados, Chromium de Forms)
+        shell: cmd
+        run: scripts\laboratorio_integrado\1_INSTALAR.cmd --navegador-forms
+      - name: 7_VALIDACION_INTEGRAL.cmd nocturno (no interactivo, red simulada)
+        shell: cmd
+        run: scripts\laboratorio_integrado\7_VALIDACION_INTEGRAL.cmd nocturno --no-interactivo --duracion 20400
+      - name: Detener
+        if: always()
+        shell: cmd
+        run: |
+          call scripts\laboratorio_integrado\4_DETENER.cmd --forzar
+          exit /b 0
+      - name: Reunir evidencias en el espacio de trabajo
+        if: always()
+        shell: pwsh
+        run: |
+          $dst = Join-Path $env:GITHUB_WORKSPACE "evidencias-e9"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          foreach ($p in @("$env:USERPROFILE\cauce-lab-integrado\informes", "$env:USERPROFILE\cauce-lab-integrado\datos\logs")) {
+            if (Test-Path $p) { Copy-Item -Recurse -Force $p (Join-Path $dst (Split-Path $p -Leaf)) }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rc3-nocturno-windows
+          path: evidencias-e9/
